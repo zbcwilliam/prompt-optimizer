@@ -7,7 +7,17 @@ import { TemplateManager, templateManager as defaultTemplateManager } from '../t
 import { HistoryManager, historyManager as defaultHistoryManager } from '../history/manager';
 import { OptimizationError, IterationError, TestError, ServiceDependencyError } from './errors';
 import { ERROR_MESSAGES } from '../llm/errors';
+import { TemplateProcessor, TemplateContext } from '../template/processor';
 import { v4 as uuidv4 } from 'uuid';
+
+/**
+ * Default template IDs used by the system
+ */
+const DEFAULT_TEMPLATES = {
+  OPTIMIZE: 'general-optimize',
+  ITERATE: 'iterate',
+  TEST: 'test-prompt'
+} as const;
 
 /**
  * 提示词服务实现
@@ -64,17 +74,17 @@ export class PromptService implements IPromptService {
    */
   private validateResponse(response: string, prompt: string) {
     if (!response?.trim()) {
-      throw new OptimizationError('优化失败: LLM服务返回结果为空', prompt);
+        throw new OptimizationError('Optimization failed: LLM service returned empty result', prompt);
     }
   }
 
   /**
    * 优化提示词
    */
-  async optimizePrompt(prompt: string, modelKey: string): Promise<string> {
+  async optimizePrompt(prompt: string, modelKey: string, templateId?: string): Promise<string> {
     try {
       this.validateInput(prompt, modelKey);
-      
+
       // 获取模型配置（使用统一错误）
       const modelConfig = await this.modelManager.getModel(modelKey);
       if (!modelConfig) {
@@ -87,21 +97,19 @@ export class PromptService implements IPromptService {
       // 获取优化提示词
       let template;
       try {
-        template = this.templateManager.getTemplate('general-optimize');
+        template = this.templateManager.getTemplate(templateId || DEFAULT_TEMPLATES.OPTIMIZE);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        throw new OptimizationError(`优化失败: ${errorMessage}`, prompt);
+        throw new OptimizationError(`Optimization failed: ${errorMessage}`, prompt);
       }
 
       if (!template?.content) {
-        throw new OptimizationError('优化失败: 提示词不存在或无效', prompt);
+        throw new OptimizationError('Optimization failed: Template not found or invalid', prompt);
       }
 
-      // 构建消息
-      const messages: Message[] = [
-        { role: 'system', content: template.content },
-        { role: 'user', content: prompt }
-      ];
+      // 使用TemplateProcessor处理模板和变量替换
+      const context: TemplateContext = { originalPrompt: prompt };
+      const messages = TemplateProcessor.processTemplate(template, context);
 
       // 发送请求
       const result = await this.llmService.sendMessage(messages, modelKey);
@@ -119,7 +127,7 @@ export class PromptService implements IPromptService {
         version: 1,
         timestamp: Date.now(),
         modelKey,
-        templateId: 'optimize'
+        templateId: templateId || DEFAULT_TEMPLATES.OPTIMIZE
       });
 
       return result;
@@ -134,13 +142,16 @@ export class PromptService implements IPromptService {
    */
   async iteratePrompt(
     originalPrompt: string,
+    lastOptimizedPrompt: string,
     iterateInput: string,
-    modelKey: string
+    modelKey: string,
+    templateId?: string
   ): Promise<string> {
     try {
       this.validateInput(originalPrompt, modelKey);
+      this.validateInput(lastOptimizedPrompt, modelKey);
       this.validateInput(iterateInput, modelKey);
-      
+
       // 获取模型配置
       const modelConfig = await this.modelManager.getModel(modelKey);
       if (!modelConfig) {
@@ -150,21 +161,23 @@ export class PromptService implements IPromptService {
       // 获取迭代提示词
       let template;
       try {
-        template = await this.templateManager.getTemplate('iterate');
+        template = this.templateManager.getTemplate(templateId || DEFAULT_TEMPLATES.ITERATE);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         throw new IterationError(`迭代失败: ${errorMessage}`, originalPrompt, iterateInput);
       }
 
       if (!template?.content) {
-        throw new IterationError('迭代失败: 提示词不存在或无效', originalPrompt, iterateInput);
+        throw new IterationError('Iteration failed: Template not found or invalid', originalPrompt, iterateInput);
       }
 
-      // 构建消息
-      const messages: Message[] = [
-        { role: 'system', content: template.content },
-        { role: 'user', content: `原始提示词：${originalPrompt}\n\n优化需求：${iterateInput}` }
-      ];
+      // 使用TemplateProcessor处理模板和变量替换
+      const context: TemplateContext = {
+        originalPrompt,
+        lastOptimizedPrompt,
+        iterateInput
+      };
+      const messages = TemplateProcessor.processTemplate(template, context);
 
       // 发送请求
       const result = await this.llmService.sendMessage(messages, modelKey);
@@ -180,7 +193,7 @@ export class PromptService implements IPromptService {
         previousId: originalPrompt,
         timestamp: Date.now(),
         modelKey,
-        templateId: 'iterate'
+        templateId: templateId || DEFAULT_TEMPLATES.ITERATE
       });
 
       return result;
@@ -223,7 +236,7 @@ export class PromptService implements IPromptService {
         version: 1,
         timestamp: Date.now(),
         modelKey,
-        templateId: 'test'
+        templateId: DEFAULT_TEMPLATES.TEST
       });
 
       return result;
@@ -286,7 +299,7 @@ export class PromptService implements IPromptService {
   async optimizePromptStream(
     prompt: string,
     modelKey: string,
-    template: string,
+    templateId: string,
     callbacks: {
       onToken: (token: string) => void;
       onComplete: () => void;
@@ -295,7 +308,7 @@ export class PromptService implements IPromptService {
   ): Promise<void> {
     try {
       this.validateInput(prompt, modelKey);
-      
+
       // 获取模型配置
       const modelConfig = await this.modelManager.getModel(modelKey);
       if (!modelConfig) {
@@ -305,11 +318,22 @@ export class PromptService implements IPromptService {
         );
       }
 
-      // 构建消息
-      const messages: Message[] = [
-        { role: 'system', content: template },
-        { role: 'user', content: prompt }
-      ];
+      // 获取优化提示词
+      let template;
+      try {
+        template = this.templateManager.getTemplate(templateId);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        throw new OptimizationError(`Optimization failed: ${errorMessage}`, prompt);
+      }
+
+      if (!template?.content) {
+        throw new OptimizationError('Optimization failed: Template not found or invalid', prompt);
+      }
+
+      // 使用TemplateProcessor处理模板和变量替换
+      const context: TemplateContext = { originalPrompt: prompt };
+      const messages = TemplateProcessor.processTemplate(template, context);
 
       // 使用流式调用
       let result = '';
@@ -331,7 +355,7 @@ export class PromptService implements IPromptService {
       );
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new OptimizationError(`优化失败: ${errorMessage}`, prompt);
+      throw new OptimizationError(`Optimization failed: ${errorMessage}`, prompt);
     }
   }
 
@@ -340,39 +364,43 @@ export class PromptService implements IPromptService {
    */
   async iteratePromptStream(
     originalPrompt: string,
+    lastOptimizedPrompt: string,
     iterateInput: string,
     modelKey: string,
     handlers: StreamHandlers,
-    template: { content: string } | string
+    templateId: string
   ): Promise<void> {
     try {
       this.validateInput(originalPrompt, modelKey);
+      this.validateInput(lastOptimizedPrompt, modelKey);
       this.validateInput(iterateInput, modelKey);
-      
+
       // 获取模型配置
       const modelConfig = await this.modelManager.getModel(modelKey);
       if (!modelConfig) {
-        throw new ServiceDependencyError('模型不存在', 'ModelManager');
+        throw new ServiceDependencyError('Model not found', 'ModelManager');
       }
 
       // 获取迭代提示词
-      let templateContent: string;
-      if (typeof template === 'string') {
-        templateContent = template;
-      } else if (template && typeof template.content === 'string') {
-        templateContent = template.content;
-      } else {
-        throw new IterationError('迭代失败: 未提供有效的提示词模板', originalPrompt, iterateInput);
+      let template;
+      try {
+        template = this.templateManager.getTemplate(templateId);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        throw new IterationError(`Iteration failed: ${errorMessage}`, originalPrompt, iterateInput);
       }
 
-      // 构建消息
-      const messages: Message[] = [
-        {
-          role: 'system',
-          content: templateContent
-        },
-        { role: 'user', content: `原始提示词：${originalPrompt}\n\n优化需求：${iterateInput}` }
-      ];
+      if (!template?.content) {
+        throw new IterationError('Iteration failed: Template not found or invalid', originalPrompt, iterateInput);
+      }
+
+      // 使用TemplateProcessor处理模板和变量替换
+      const context: TemplateContext = {
+        originalPrompt,
+        lastOptimizedPrompt,
+        iterateInput
+      };
+      const messages = TemplateProcessor.processTemplate(template, context);
 
       // 使用流式调用
       let result = '';
@@ -392,7 +420,7 @@ export class PromptService implements IPromptService {
       );
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new IterationError(`迭代失败: ${errorMessage}`, originalPrompt, iterateInput);
+      throw new IterationError(`Iteration failed: ${errorMessage}`, originalPrompt, iterateInput);
     }
   }
 }
@@ -408,6 +436,6 @@ export function createPromptService(
     return new PromptService(modelManager, llmService, templateManager, historyManager);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    throw new Error(`初始化失败: ${errorMessage}`);
+    throw new Error(`Initialization failed: ${errorMessage}`);
   }
 } 

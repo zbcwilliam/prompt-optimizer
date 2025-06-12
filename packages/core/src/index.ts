@@ -2,6 +2,9 @@
 
 // 导出模板相关
 export { TemplateManager, templateManager } from './services/template/manager'
+export { TemplateProcessor } from './services/template/processor'
+export { TemplateLanguageService, templateLanguageService } from './services/template/languageService'
+export type { BuiltinTemplateLanguage } from './services/template/languageService'
 export * from './services/template/types'
 export * from './services/template/defaults'
 export * from './services/template/errors'
@@ -20,6 +23,16 @@ export * from './services/llm/errors'
 export { ModelManager, modelManager } from './services/model/manager'
 export * from './services/model/types'
 export * from './services/model/defaults'
+export * from './services/model/advancedParameterDefinitions'
+export { 
+  validateLLMParams, 
+  getSupportedParameters
+} from './services/model/validation'
+export type { 
+  ValidationResult,
+  ValidationError as LLMValidationError,
+  ValidationWarning 
+} from './services/model/validation'
 
 // 导出提示词服务相关
 export { PromptService, createPromptService } from './services/prompt/service'

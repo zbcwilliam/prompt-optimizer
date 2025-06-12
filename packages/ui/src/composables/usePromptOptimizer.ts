@@ -67,7 +67,7 @@ export function usePromptOptimizer(
       await promptService.value.optimizePromptStream(
         prompt.value, 
         selectedOptimizeModel.value,
-        selectedOptimizeTemplate.value.content,
+        selectedOptimizeTemplate.value.id,
         {
           onToken: (token: string) => {
             optimizedPrompt.value += token
@@ -116,8 +116,8 @@ export function usePromptOptimizer(
   }
   
   // 迭代优化
-  const handleIteratePrompt = async ({ originalPrompt, iterateInput }: { originalPrompt: string, iterateInput: string }) => {
-    if (!originalPrompt || !iterateInput || isIterating.value) return
+  const handleIteratePrompt = async ({ originalPrompt, optimizedPrompt: lastOptimizedPrompt, iterateInput }: { originalPrompt: string, optimizedPrompt: string, iterateInput: string }) => {
+    if (!originalPrompt || !lastOptimizedPrompt || !iterateInput || isIterating.value) return
     if (!promptService.value) {
       toast.error(t('toast.error.serviceInit'))
       return
@@ -133,6 +133,7 @@ export function usePromptOptimizer(
     try {
       await promptService.value.iteratePromptStream(
         originalPrompt,
+        lastOptimizedPrompt,
         iterateInput,
         selectedOptimizeModel.value,
         {
@@ -152,26 +153,25 @@ export function usePromptOptimizer(
                 templateId: selectedIterateTemplate.value.id
               });
               
-              currentVersions.value = updatedChain.versions;
-              currentVersionId.value = updatedChain.currentRecord.id;
+              currentVersions.value = updatedChain.versions
+              currentVersionId.value = updatedChain.currentRecord.id
               
-              toast.success(t('toast.success.iterateSuccess'))
+              toast.success(t('toast.success.iterateComplete'))
             } catch (error) {
-              console.error('添加迭代记录失败:', error)
-              toast.error('添加迭代记录失败: ' + (error as Error).message)
-            } finally {
-              isIterating.value = false
+              console.error('[History] 迭代记录失败:', error)
+              toast.warning(t('toast.warning.historyFailed'))
             }
           },
           onError: (error: Error) => {
-            toast.error(error.message || t('toast.error.iterateFailed'))
+            console.error('[Iterate] 迭代失败:', error)
+            toast.error(t('toast.error.iterateFailed'))
           }
         },
-        selectedIterateTemplate.value
-      );
-    } catch (error: any) {
-      console.error(t('toast.error.iterateFailed'), error)
-      toast.error(error.message || t('toast.error.iterateFailed'))
+        selectedIterateTemplate.value.id
+      )
+    } catch (error) {
+      console.error('[Iterate] 迭代失败:', error)
+      toast.error(t('toast.error.iterateFailed'))
     } finally {
       isIterating.value = false
     }
@@ -198,6 +198,9 @@ export function usePromptOptimizer(
   // 初始化提示词选择
   const initTemplateSelection = async () => {
     try {
+      // 确保模板管理器已初始化
+      await templateManager.ensureInitialized()
+
       // 加载优化提示词
       const optimizeTemplateId = await storage.getItem(STORAGE_KEYS.OPTIMIZE_TEMPLATE)
       if (optimizeTemplateId) {
@@ -207,7 +210,7 @@ export function usePromptOptimizer(
             selectedOptimizeTemplate.value = optimizeTemplate
           }
         } catch (error) {
-          console.warn(t('toast.warn.loadOptimizeTemplateFailed'), error)
+          console.warn('加载已保存的优化提示词失败', error)
         }
       }
       
@@ -228,7 +231,7 @@ export function usePromptOptimizer(
             selectedIterateTemplate.value = iterateTemplate
           }
         } catch (error) {
-          console.warn(t('toast.warn.loadIterateTemplateFailed'), error)
+          console.warn('加载已保存的迭代提示词失败', error)
         }
       }
       
@@ -242,11 +245,11 @@ export function usePromptOptimizer(
 
       // 如果仍然无法加载任何提示词，显示错误
       if (!selectedOptimizeTemplate.value || !selectedIterateTemplate.value) {
-        throw new Error(t('toast.error.noDefaultTemplate'))
+        throw new Error('无法加载默认提示词')
       }
     } catch (error) {
-      console.error(t('toast.error.loadTemplateFailed'), error)
-      toast.error(t('toast.error.loadTemplateFailed'))
+      console.error('加载模板失败', error)
+      toast.error('加载模板失败')
     }
   }
 
@@ -254,6 +257,26 @@ export function usePromptOptimizer(
   onMounted(async () => {
     await initTemplateSelection()
   })
+
+  // 处理模板选择
+  const handleTemplateSelect = async (template: Template, type: 'optimize' | 'iterate') => {
+    try {
+      if (type === 'optimize') {
+        selectedOptimizeTemplate.value = template
+      } else {
+        selectedIterateTemplate.value = template
+      }
+      
+      await saveTemplateSelection(template, type)
+      toast.success(t('toast.success.templateSelected', {
+        type: type === 'optimize' ? t('common.optimize') : t('common.iterate'),
+        name: template.name
+      }))
+    } catch (error) {
+      console.error(`模板选择失败 (${type}):`, error)
+      toast.error(t('toast.error.selectTemplateFailed'))
+    }
+  }
 
   return {
     // 状态
@@ -271,6 +294,7 @@ export function usePromptOptimizer(
     handleOptimizePrompt,
     handleIteratePrompt,
     handleSwitchVersion,
+    handleTemplateSelect,
     saveTemplateSelection,
     initTemplateSelection
   }

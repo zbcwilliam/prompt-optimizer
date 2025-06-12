@@ -1,19 +1,20 @@
 import { PromptRecord } from '../history/types';
 import { StreamHandlers } from '../llm/types';
-import { Template } from '../template/types';
 
 /**
  * 提示词服务接口
  */
 export interface IPromptService {
   /** 优化提示词 */
-  optimizePrompt(prompt: string, modelKey: string): Promise<string>;
+  optimizePrompt(prompt: string, modelKey: string, templateId?: string): Promise<string>;
   
   /** 迭代优化提示词 */
   iteratePrompt(
     originalPrompt: string,
+    lastOptimizedPrompt: string,
     iterateInput: string,
-    modelKey: string
+    modelKey: string,
+    templateId?: string
   ): Promise<string>;
   
   /** 测试提示词 */
@@ -33,17 +34,18 @@ export interface IPromptService {
   optimizePromptStream(
     prompt: string,
     modelKey: string,
-    template: string,
+    templateId: string,
     callbacks: StreamHandlers
   ): Promise<void>;
 
   /** 迭代优化提示词（流式） */
   iteratePromptStream(
     originalPrompt: string,
+    lastOptimizedPrompt: string,
     iterateInput: string,
     modelKey: string,
     handlers: StreamHandlers,
-    template: Template | string
+    templateId: string
   ): Promise<void>;
 
   /** 测试提示词（流式） */
