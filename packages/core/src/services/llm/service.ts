@@ -79,19 +79,17 @@ export class LLMService implements ILLMService {
     }
 
     // 创建OpenAI实例配置
+    const defaultTimeout = isStream ? 90000 : 60000;
+    const timeout = modelConfig.llmParams?.timeout !== undefined
+                    ? modelConfig.llmParams.timeout
+                    : defaultTimeout;
     const config: any = {
       apiKey: apiKey,
       baseURL: finalBaseURL,
       dangerouslyAllowBrowser: true,
-      timeout: 60000, // 设置60秒超时时间，文本生成可能需要较长时间
-      maxRetries: 3   // 设置重试次数
+      timeout: timeout, // Use the new timeout logic
+      maxRetries: isStream ? 2 : 3
     };
-
-    // 为流式请求添加额外配置
-    if (isStream) {
-      config.timeout = 90000; // 流式请求使用更长的超时时间
-      config.maxRetries = 2;  // 流式请求减少重试次数
-    }
 
     const instance = new OpenAI(config);
 
@@ -142,11 +140,19 @@ export class LLMService implements ILLMService {
       content: msg.content
     }));
 
-    const response = await openai.chat.completions.create({
+    const {
+      timeout, // Handled in getOpenAIInstance
+      model: llmParamsModel, // Avoid overriding main model
+      messages: llmParamsMessages, // Avoid overriding main messages
+      ...restLlmParams
+    } = modelConfig.llmParams || {};
+
+    const completionConfig: any = {
       model: modelConfig.defaultModel,
       messages: formattedMessages,
-      temperature: 0.7
-    });
+      ...restLlmParams // Spread other params from llmParams
+    };
+    const response = await openai.chat.completions.create(completionConfig);
 
     return response.choices[0].message.content || '';
   }
@@ -168,9 +174,15 @@ export class LLMService implements ILLMService {
     const conversationMessages = messages.filter(msg => msg.role !== 'system');
 
     // 创建聊天会话
-    const chat = model.startChat({
+    const generationConfig = this.buildGeminiGenerationConfig(modelConfig.llmParams);
+
+    const chatOptions: any = {
       history: this.formatGeminiHistory(conversationMessages)
-    });
+    };
+    if (Object.keys(generationConfig).length > 0) {
+      chatOptions.generationConfig = generationConfig;
+    }
+    const chat = model.startChat(chatOptions);
 
     // 获取最后一条用户消息
     const lastUserMessage = conversationMessages.length > 0 &&
@@ -310,16 +322,28 @@ export class LLMService implements ILLMService {
 
     try {
       console.log('开始创建流式请求...');
-      const stream = await openai.chat.completions.create({
+      const {
+        timeout, // Handled in getOpenAIInstance
+        model: llmParamsModel, // Avoid overriding main model
+        messages: llmParamsMessages, // Avoid overriding main messages
+        stream: llmParamsStream, // Avoid overriding main stream flag
+        ...restLlmParams
+      } = modelConfig.llmParams || {};
+
+      const completionConfig: any = {
         model: modelConfig.defaultModel,
         messages: formattedMessages,
-        temperature: 0.7,
-        stream: true
-      });
+        stream: true, // Essential for streaming
+        ...restLlmParams // User-defined parameters from llmParams
+      };
+      
+      // 直接使用流式响应，无需类型转换
+      const stream = await openai.chat.completions.create(completionConfig);
 
       console.log('成功获取到流式响应');
 
-      for await (const chunk of stream) {
+      // 使用类型断言来确保TypeScript知道这是流式响应
+      for await (const chunk of stream as any) {
         const content = chunk.choices[0]?.delta?.content || '';
         if (content) {
           console.log('收到数据块:', {
@@ -363,9 +387,15 @@ export class LLMService implements ILLMService {
     const conversationMessages = messages.filter(msg => msg.role !== 'system');
 
     // 创建聊天会话
-    const chat = model.startChat({
+    const generationConfig = this.buildGeminiGenerationConfig(modelConfig.llmParams);
+
+    const chatOptions: any = {
       history: this.formatGeminiHistory(conversationMessages)
-    });
+    };
+    if (Object.keys(generationConfig).length > 0) {
+      chatOptions.generationConfig = generationConfig;
+    }
+    const chat = model.startChat(chatOptions);
 
     // 获取最后一条用户消息
     const lastUserMessage = conversationMessages.length > 0 &&
@@ -547,9 +577,6 @@ export class LLMService implements ILLMService {
 
     // Gemini API没有直接获取模型列表的接口，返回预定义列表
     return [
-      { id: 'gemini-1.0-pro', name: 'Gemini 1.0 Pro' },
-      { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
-      { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
       { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' }
     ];
   }
@@ -560,12 +587,12 @@ export class LLMService implements ILLMService {
   private async fetchAnthropicModelsInfo(modelConfig: ModelConfig): Promise<ModelInfo[]> {
     console.log(`获取${modelConfig.name || 'Anthropic'}的模型列表`);
 
-    // Anthropic API没有公开的模型列表接口
+    // Anthropic API的获取模型列表功能未兼容openai格式，所以这里返回一个默认列表
     return [
-      { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus' },
-      { id: 'claude-3-sonnet-20240229', name: 'Claude 3 Sonnet' },
-      { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku' },
-      { id: 'claude-2.1', name: 'Claude 2.1' }
+      { id: 'claude-opus-4-20250514', name: 'Claude 4.0 Opus' },
+      { id: 'claude-sonnet-4-20250514', name: 'Claude 4.0 Sonnet' },
+      { id: 'claude-3-7-sonnet-latest', name: 'Claude 3.7 Sonnet' },
+      { id: 'claude-3-5-haiku-latest', name: 'Claude 3.5 Haiku' }
     ];
   }
 
@@ -587,6 +614,56 @@ export class LLMService implements ILLMService {
         { id: 'deepseek-coder', name: 'DeepSeek Coder' }
       ];
     }
+  }
+
+  /**
+   * 构建Gemini生成配置
+   * 
+   * 注意：此方法假设传入的 llmParams 已经通过 ModelManager.validateConfig() 
+   * 中的 validateLLMParams 验证，确保安全性
+   */
+  private buildGeminiGenerationConfig(llmParams: Record<string, any> = {}): any {
+    const {
+      temperature,
+      maxOutputTokens,
+      topP,
+      topK,
+      candidateCount,
+      stopSequences,
+      ...otherParams
+    } = llmParams;
+
+    const generationConfig: any = {};
+    
+    // 添加已知参数
+    if (temperature !== undefined) {
+      generationConfig.temperature = temperature;
+    }
+    if (maxOutputTokens !== undefined) {
+      generationConfig.maxOutputTokens = maxOutputTokens;
+    }
+    if (topP !== undefined) {
+      generationConfig.topP = topP;
+    }
+    if (topK !== undefined) {
+      generationConfig.topK = topK;
+    }
+    if (candidateCount !== undefined) {
+      generationConfig.candidateCount = candidateCount;
+    }
+    if (stopSequences !== undefined && Array.isArray(stopSequences)) {
+      generationConfig.stopSequences = stopSequences;
+    }
+
+    // 添加其他参数 (已在上层验证过安全性)
+    // 排除一些明显不属于 Gemini generationConfig 的参数
+    for (const [key, value] of Object.entries(otherParams)) {
+      if (!['timeout', 'model', 'messages', 'stream'].includes(key)) {
+        generationConfig[key] = value;
+      }
+    }
+
+    return generationConfig;
   }
 }
 
