@@ -2,9 +2,10 @@
 <template>
   <div class="space-y-3">
     <!-- 标题 -->
-    <div class="flex justify-between items-center">
+    <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
       <label class="block text-lg theme-label">{{ label }}</label>
-      <div class="flex items-center space-x-2">
+      <div class="flex items-center space-x-3">
+        <slot name="optimization-mode-selector"></slot>
         <button
           @click="openFullscreen"
           class="px-3 py-1.5 theme-button-secondary flex items-center space-x-2"
@@ -37,10 +38,13 @@
       </div>
       
       <!-- 提示词模板选择 -->
-      <div class="flex-1 min-w-0">
-        <label v-if="templateLabel" class="block text-sm theme-label mb-1.5 truncate">{{ templateLabel }}</label>
+      <div v-if="templateLabel" class="flex-1 min-w-0">
+        <label class="block text-sm theme-label mb-1.5 truncate">{{ templateLabel }}</label>
         <slot name="template-select"></slot>
       </div>
+
+      <!-- 控制按钮组插槽 -->
+      <slot name="control-buttons"></slot>
 
       <!-- 提交按钮 -->
       <div class="min-w-[60px]">

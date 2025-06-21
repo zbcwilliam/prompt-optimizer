@@ -69,6 +69,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { templateManager } from '@prompt-optimizer/core'
 import { clickOutside } from '../directives/clickOutside'
+import type { OptimizationMode } from '@prompt-optimizer/core'
 
 const { t } = useI18n()
 
@@ -78,11 +79,11 @@ interface Template {
   isBuiltin?: boolean;
   metadata: {
     description?: string;
-    templateType: 'optimize' | 'iterate';
+    templateType: 'optimize' | 'userOptimize' | 'iterate';
   };
 }
 
-type TemplateType = 'optimize' | 'iterate';
+type TemplateType = 'optimize' | 'userOptimize' | 'iterate';
 
 const props = defineProps({
   modelValue: {
@@ -92,7 +93,11 @@ const props = defineProps({
   type: {
     type: String as () => TemplateType,
     required: true,
-    validator: (value: string): boolean => ['optimize', 'iterate'].includes(value)
+    validator: (value: string): boolean => ['optimize', 'userOptimize', 'iterate'].includes(value)
+  },
+  optimizationMode: {
+    type: String as () => OptimizationMode,
+    default: 'system'
   }
 })
 
@@ -136,8 +141,10 @@ const handleResize = () => {
   updateDropdownPosition()
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener('resize', handleResize)
+  // 确保模板管理器已初始化
+  await templateManager.ensureInitialized()
   refreshTemplates()
 })
 
@@ -159,19 +166,40 @@ watch(isOpen, async (newValue) => {
 const templates = computed(() => {
   // 使用 refreshTrigger 触发重新计算
   refreshTrigger.value
+  // 检查模板管理器是否已初始化
+  if (!templateManager.isInitialized()) {
+    return []
+  }
+
+  // 使用按类型筛选方法
   return templateManager.listTemplatesByType(props.type)
 })
+
+// 添加对optimizationMode变化的监听
+watch(
+  () => props.optimizationMode,
+  (newOptimizationMode, oldOptimizationMode) => {
+    if (newOptimizationMode !== oldOptimizationMode) {
+      // optimizationMode变化时，静默刷新模板列表（避免重复toast）
+      refreshTemplates()
+    }
+  }
+)
 
 // 添加对模板列表变化的监听
 watch(
   templates,  // 监听模板列表
-  (newTemplates) => {
+  (newTemplates, oldTemplates) => {
     const currentTemplate = props.modelValue
-    // 如果当前选中的模板不在列表中，自动切换到第一个
+    // 只有在模板列表真正发生变化，且当前模板不在新列表中时才自动切换
     if (currentTemplate && !newTemplates.find(t => t.id === currentTemplate.id)) {
       const firstTemplate = newTemplates.find(t => t.metadata.templateType === props.type) || null
-      emit('update:modelValue', firstTemplate)
-      emit('select', firstTemplate, props.type)
+      // 避免重复触发：只在实际发生变化时emit
+      if (firstTemplate && firstTemplate.id !== currentTemplate?.id) {
+        emit('update:modelValue', firstTemplate)
+        // 静默选择，不显示toast
+        emit('select', firstTemplate, false)
+      }
     }
   },
   { deep: true }
@@ -179,14 +207,26 @@ watch(
 
 // 改进刷新方法
 const refreshTemplates = () => {
+  const oldTrigger = refreshTrigger.value
   refreshTrigger.value++
-  // 刷新时也检查当前选中状态
+  
+  // 检查模板管理器是否已初始化
+  if (!templateManager.isInitialized()) {
+    return
+  }
+  
+  // 只在初始化时检查和自动选择模板，避免重复触发
   const currentTemplates = templateManager.listTemplatesByType(props.type)
   const currentTemplate = props.modelValue
-  if (currentTemplate && !currentTemplates.find(t => t.id === currentTemplate.id)) {
+  
+  // 仅在当前没有选中模板或选中的模板不在列表中时才自动选择
+  if (!currentTemplate || !currentTemplates.find(t => t.id === currentTemplate.id)) {
     const firstTemplate = currentTemplates[0] || null
-    emit('update:modelValue', firstTemplate)
-    emit('select', firstTemplate, props.type)
+    if (firstTemplate && firstTemplate.id !== currentTemplate?.id) {
+      emit('update:modelValue', firstTemplate)
+      // 静默选择，不显示toast（通过传递false参数）
+      emit('select', firstTemplate, false)
+    }
   }
 }
 
@@ -196,11 +236,17 @@ defineExpose({
 })
 
 const selectTemplate = (template: Template) => {
+  // 避免选择相同模板时的重复调用
+  if (template.id === props.modelValue?.id) {
+    isOpen.value = false
+    return
+  }
+  
   emit('update:modelValue', template)
-  emit('select', template, props.type)
+  // 用户主动选择时显示toast（传递true参数）
+  emit('select', template, true)
   isOpen.value = false
-  // 选择后刷新列表
-  refreshTemplates()
+  // 选择后不需要再次刷新列表，避免连锁反应
 }
 </script>
 

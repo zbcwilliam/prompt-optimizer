@@ -29,7 +29,10 @@ export { default as ActionButtonUI } from './components/ActionButton.vue'
 export { default as ThemeToggleUI } from './components/ThemeToggleUI.vue'
 export { default as TestPanelUI } from './components/TestPanel.vue'
 export { default as LanguageSwitchUI } from './components/LanguageSwitch.vue'
+export { default as BuiltinTemplateLanguageSwitchUi } from './components/BuiltinTemplateLanguageSwitch.vue'
 export { default as DataManagerUI } from './components/DataManager.vue'
+export { default as OptimizationModeSelectorUI } from './components/OptimizationModeSelector.vue'
+export { default as OptimizePanelUI } from './components/OptimizePanel.vue'
 
 // 导出指令
 export { clickOutside } from './directives/clickOutside'
@@ -46,3 +49,6 @@ export {
     createLLMService,
     createPromptService
 } from '@prompt-optimizer/core'
+
+// 导出类型
+export type { OptimizationMode } from '@prompt-optimizer/core'

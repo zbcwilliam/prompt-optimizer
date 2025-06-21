@@ -17,7 +17,8 @@ interface AllData {
 // 需要导出的UI配置键
 const UI_SETTINGS_KEYS = [
   'theme-id',
-  'preferred-language', 
+  'preferred-language',
+  'builtin-template-language',
   'app:selected-optimize-model',
   'app:selected-test-model',
   'app:selected-optimize-template',
@@ -139,7 +140,7 @@ export class DataManager {
         try {
           // 验证模型配置的基本字段，对于旧版本数据要宽松一些
           if (!model.key || !model.name) {
-            console.warn(`跳过无效的模型配置: 缺少关键字段 (key: ${model.key}, name: ${model.name})`);
+            console.warn(`Skipping invalid model configuration: missing required fields (key: ${model.key}, name: ${model.name})`);
             continue;
           }
           
@@ -156,10 +157,11 @@ export class DataManager {
               provider: model.provider || existingModel.provider,
               enabled: model.enabled !== undefined ? model.enabled : existingModel.enabled, // 优先使用导入的启用状态
               ...(model.apiKey !== undefined && { apiKey: model.apiKey }),
-              ...(model.useVercelProxy !== undefined && { useVercelProxy: model.useVercelProxy })
+              ...(model.useVercelProxy !== undefined && { useVercelProxy: model.useVercelProxy }),
+              ...(model.llmParams !== undefined && { llmParams: model.llmParams })
             };
             await this.modelManagerInstance.updateModel(model.key, mergedConfig);
-            console.log(`模型 ${model.key} 已存在，已更新配置（使用导入的启用状态: ${mergedConfig.enabled}）`);
+            console.log(`Model ${model.key} already exists, configuration updated (using imported enabled status: ${mergedConfig.enabled})`);
           } else {
             // 如果模型不存在，添加新的自定义模型，使用导入文件中的启用状态
             const newModelConfig: ModelConfig = {
@@ -170,13 +172,14 @@ export class DataManager {
               provider: model.provider || 'custom',
               enabled: model.enabled !== undefined ? model.enabled : false, // 使用导入的启用状态，默认为false
               ...(model.apiKey !== undefined && { apiKey: model.apiKey }),
-              ...(model.useVercelProxy !== undefined && { useVercelProxy: model.useVercelProxy })
+              ...(model.useVercelProxy !== undefined && { useVercelProxy: model.useVercelProxy }),
+              ...(model.llmParams !== undefined && { llmParams: model.llmParams })
             };
             await this.modelManagerInstance.addModel(model.key, newModelConfig);
-            console.log(`已导入新模型 ${model.key}（启用状态: ${newModelConfig.enabled}）`);
+            console.log(`Imported new model ${model.key} (enabled: ${newModelConfig.enabled})`);
           }
         } catch (error) {
-          console.warn(`导入模型 ${model.key} 时发生错误:`, error);
+                      console.warn(`Error importing model ${model.key}:`, error);
           failedModels.push({ model, error: error as Error });
         }
       }
@@ -214,7 +217,7 @@ export class DataManager {
         try {
           // 验证模板的基本字段，对于旧版本数据要宽松一些
           if (!template.id || !template.name || !template.content) {
-            console.warn(`跳过无效的模板配置: 缺少关键字段 (id: ${template.id}, name: ${template.name})`);
+            console.warn(`Skipping invalid template configuration: missing required fields (id: ${template.id}, name: ${template.name})`);
             continue;
           }
           
@@ -229,7 +232,7 @@ export class DataManager {
             const random = Math.random().toString(36).substr(2, 6);
             finalTemplateId = `user-${template.id}-${timestamp}-${random}`;
             finalTemplateName = `${template.name} (导入副本)`;
-            console.warn(`检测到与内置模板ID冲突: ${template.id}，已重命名为: ${finalTemplateId}`);
+            console.warn(`Detected conflict with built-in template ID: ${template.id}, renamed to: ${finalTemplateId}`);
           }
           
           // 确保导入的模板标记为用户模板，并为缺失字段提供默认值
@@ -243,12 +246,13 @@ export class DataManager {
               lastModified: Date.now(), // 更新为当前时间
               templateType: template.metadata?.templateType || 'optimize', // 为旧版本数据提供默认类型
               author: template.metadata?.author || 'User', // 导入的模板标记为用户创建
-              ...(template.metadata?.description && { description: template.metadata.description })
+              ...(template.metadata?.description && { description: template.metadata.description }),
+              ...(template.metadata?.language && { language: template.metadata.language }) // 只在原本有language字段时才保留
             }
           };
           
           await this.templateManagerInstance.saveTemplate(userTemplate);
-          console.log(`已导入模板: ${finalTemplateId} (${finalTemplateName})`);
+          console.log(`Imported template: ${finalTemplateId} (${finalTemplateName})`);
         } catch (error) {
           console.warn('Failed to import template:', error);
           failedTemplates.push({ template, error: error as Error });
@@ -272,18 +276,18 @@ export class DataManager {
         try {
           // 验证键名是否安全且在白名单中
           if (!isValidSettingKey(key)) {
-            console.warn(`跳过无效的UI配置键: ${key}`);
+            console.warn(`Skipping invalid UI configuration key: ${key}`);
             continue;
           }
           
           // 验证值是否安全
           if (!isValidSettingValue(value)) {
-            console.warn(`跳过无效的UI配置值 ${key}: 类型=${typeof value}`);
+            console.warn(`Skipping invalid UI configuration value ${key}: type=${typeof value}`);
             continue;
           }
           
           await this.storage.setItem(key, value);
-          console.log(`已导入UI配置: ${key} = ${value}`);
+          console.log(`Imported UI configuration: ${key} = ${value}`);
         } catch (error) {
           console.warn(`Failed to import UI setting ${key}:`, error);
           failedSettings.push({ key, error: error as Error });

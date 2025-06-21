@@ -153,6 +153,7 @@ const { elementRef: promptTextarea, watchSource, forceScrollToBottom, shouldAuto
 
 interface IteratePayload {
   originalPrompt: string;
+  optimizedPrompt: string;
   iterateInput: string;
 }
 
@@ -176,6 +177,10 @@ const props = defineProps({
   currentVersionId: {
     type: String,
     default: ''
+  },
+  originalPrompt: {
+    type: String,
+    default: ''
   }
 })
 
@@ -185,6 +190,7 @@ const emit = defineEmits<{
   'openTemplateManager': [type: 'optimize' | 'iterate'];
   'update:selectedIterateTemplate': [template: Template | null];
   'switchVersion': [version: PromptRecord];
+  'templateSelect': [template: Template];
 }>()
 
 const showIterateInput = ref(false)
@@ -241,7 +247,8 @@ const submitIterate = () => {
   }
   
   emit('iterate', {
-    originalPrompt: props.optimizedPrompt,
+    originalPrompt: props.originalPrompt,
+    optimizedPrompt: props.optimizedPrompt,
     iterateInput: iterateInput.value.trim()
   })
   

@@ -1,3 +1,5 @@
+import type { OptimizationMode } from '../prompt/types';
+
 /**
  * 提示词记录类型
  */
@@ -36,7 +38,10 @@ export interface PromptRecord {
   /** 迭代时的修改说明 */
   iterationNote?: string;
   /** 元数据 */
-  metadata?: Record<string, any>;
+  metadata?: {
+    optimizationMode?: OptimizationMode;  // 优化模式
+    [key: string]: any;                   // 保持扩展性
+  };
 }
 
 /**
