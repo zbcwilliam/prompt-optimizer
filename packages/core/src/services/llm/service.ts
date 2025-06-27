@@ -1,4 +1,4 @@
-import { ILLMService, Message, StreamHandlers, ModelInfo, ModelOption } from './types';
+import { ILLMService, Message, StreamHandlers, LLMResponse, ModelInfo, ModelOption } from './types';
 import { ModelConfig } from '../model/types';
 import { ModelManager, modelManager as defaultModelManager } from '../model/manager';
 import { APIError, RequestConfigError, ERROR_MESSAGES } from './errors';
@@ -79,19 +79,17 @@ export class LLMService implements ILLMService {
     }
 
     // 创建OpenAI实例配置
+    const defaultTimeout = isStream ? 90000 : 60000;
+    const timeout = modelConfig.llmParams?.timeout !== undefined
+                    ? modelConfig.llmParams.timeout
+                    : defaultTimeout;
     const config: any = {
       apiKey: apiKey,
       baseURL: finalBaseURL,
       dangerouslyAllowBrowser: true,
-      timeout: 60000, // 设置60秒超时时间，文本生成可能需要较长时间
-      maxRetries: 3   // 设置重试次数
+      timeout: timeout, // Use the new timeout logic
+      maxRetries: isStream ? 2 : 3
     };
-
-    // 为流式请求添加额外配置
-    if (isStream) {
-      config.timeout = 90000; // 流式请求使用更长的超时时间
-      config.maxRetries = 2;  // 流式请求减少重试次数
-    }
 
     const instance = new OpenAI(config);
 
@@ -132,9 +130,9 @@ export class LLMService implements ILLMService {
   }
 
   /**
-   * 发送OpenAI消息
+   * 发送OpenAI消息（结构化格式）
    */
-  private async sendOpenAIMessage(messages: Message[], modelConfig: ModelConfig): Promise<string> {
+  private async sendOpenAIMessageStructured(messages: Message[], modelConfig: ModelConfig): Promise<LLMResponse> {
     const openai = this.getOpenAIInstance(modelConfig);
 
     const formattedMessages = messages.map(msg => ({
@@ -142,19 +140,66 @@ export class LLMService implements ILLMService {
       content: msg.content
     }));
 
-    const response = await openai.chat.completions.create({
+    const {
+      timeout, // Handled in getOpenAIInstance
+      model: llmParamsModel, // Avoid overriding main model
+      messages: llmParamsMessages, // Avoid overriding main messages
+      ...restLlmParams
+    } = modelConfig.llmParams || {};
+
+    const completionConfig: any = {
       model: modelConfig.defaultModel,
       messages: formattedMessages,
-      temperature: 0.7
-    });
+      ...restLlmParams // Spread other params from llmParams
+    };
 
-    return response.choices[0].message.content || '';
+    try {
+      const response = await openai.chat.completions.create(completionConfig);
+
+      // 处理响应中的 reasoning_content 和普通 content
+      const choice = response.choices[0];
+      if (!choice?.message) {
+        throw new Error('未收到有效的响应');
+      }
+
+      let content = choice.message.content || '';
+      let reasoning = '';
+
+      // 处理推理内容（如果存在）
+      // SiliconFlow 等提供商在 choice.message 中并列提供 reasoning_content 字段
+      if ((choice.message as any).reasoning_content) {
+        reasoning = (choice.message as any).reasoning_content;
+      } else {
+        // 检测并分离content中的think标签
+        const thinkMatch = content.match(/<think>(.*?)<\/think>/s);
+        if (thinkMatch) {
+          reasoning = thinkMatch[1];
+          content = content.replace(/<think>.*?<\/think>/s, '').trim();
+        }
+      }
+
+      const result: LLMResponse = {
+        content: content,
+        reasoning: reasoning || undefined,
+        metadata: {
+          model: modelConfig.defaultModel,
+          finishReason: choice.finish_reason || undefined
+        }
+      };
+
+      return result;
+    } catch (error) {
+      console.error('OpenAI API调用失败:', error);
+      throw new Error(`OpenAI API调用失败: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
+
+
   /**
-   * 发送Gemini消息
+   * 发送Gemini消息（结构化格式）
    */
-  private async sendGeminiMessage(messages: Message[], modelConfig: ModelConfig): Promise<string> {
+  private async sendGeminiMessageStructured(messages: Message[], modelConfig: ModelConfig): Promise<LLMResponse> {
     // 提取系统消息
     const systemMessages = messages.filter(msg => msg.role === 'system');
     const systemInstruction = systemMessages.length > 0
@@ -168,9 +213,15 @@ export class LLMService implements ILLMService {
     const conversationMessages = messages.filter(msg => msg.role !== 'system');
 
     // 创建聊天会话
-    const chat = model.startChat({
+    const generationConfig = this.buildGeminiGenerationConfig(modelConfig.llmParams);
+
+    const chatOptions: any = {
       history: this.formatGeminiHistory(conversationMessages)
-    });
+    };
+    if (Object.keys(generationConfig).length > 0) {
+      chatOptions.generationConfig = generationConfig;
+    }
+    const chat = model.startChat(chatOptions);
 
     // 获取最后一条用户消息
     const lastUserMessage = conversationMessages.length > 0 &&
@@ -178,15 +229,28 @@ export class LLMService implements ILLMService {
       ? conversationMessages[conversationMessages.length - 1].content
       : '';
 
-    // 如果没有用户消息，返回空字符串
+    // 如果没有用户消息，返回空响应
     if (!lastUserMessage) {
-      return '';
+      return {
+        content: '',
+        metadata: {
+          model: modelConfig.defaultModel
+        }
+      };
     }
 
     // 发送消息并获取响应
     const result = await chat.sendMessage(lastUserMessage);
-    return result.response.text();
+    
+    return {
+      content: result.response.text(),
+      metadata: {
+        model: modelConfig.defaultModel
+      }
+    };
   }
+
+
 
   /**
    * 格式化Gemini历史消息
@@ -219,9 +283,9 @@ export class LLMService implements ILLMService {
   }
 
   /**
-   * 发送消息
+   * 发送消息（结构化格式）
    */
-  async sendMessage(messages: Message[], provider: string): Promise<string> {
+  async sendMessageStructured(messages: Message[], provider: string): Promise<LLMResponse> {
     try {
       if (!provider) {
         throw new RequestConfigError('模型提供商不能为空');
@@ -242,10 +306,10 @@ export class LLMService implements ILLMService {
       });
 
       if (modelConfig.provider === 'gemini') {
-        return this.sendGeminiMessage(messages, modelConfig);
+        return this.sendGeminiMessageStructured(messages, modelConfig);
       } else {
         // OpenAI兼容格式的API，包括DeepSeek和自定义模型
-        return this.sendOpenAIMessage(messages, modelConfig);
+        return this.sendOpenAIMessageStructured(messages, modelConfig);
       }
     } catch (error: any) {
       if (error instanceof RequestConfigError || error instanceof APIError) {
@@ -256,7 +320,18 @@ export class LLMService implements ILLMService {
   }
 
   /**
-   * 发送消息（流式）
+   * 发送消息（传统格式，只返回主要内容）
+   */
+  async sendMessage(messages: Message[], provider: string): Promise<string> {
+    const response = await this.sendMessageStructured(messages, provider);
+    
+    // 只返回主要内容，不包含推理内容
+    // 如果需要推理内容，请使用 sendMessageStructured 方法
+    return response.content;
+  }
+
+  /**
+   * 发送消息（流式，支持结构化和传统格式）
    */
   async sendMessageStream(
     messages: Message[],
@@ -292,6 +367,102 @@ export class LLMService implements ILLMService {
     }
   }
 
+
+
+  /**
+   * 处理流式内容中的think标签（用于流式场景）
+   */
+  private processStreamContentWithThinkTags(
+    content: string, 
+    callbacks: StreamHandlers,
+    thinkState: { isInThinkMode: boolean; buffer: string }
+  ): void {
+    // 如果没有推理回调，直接发送到主要内容流
+    if (!callbacks.onReasoningToken) {
+      callbacks.onToken(content);
+      return;
+    }
+
+    // 将新内容添加到缓冲区
+    thinkState.buffer += content;
+    let remaining = thinkState.buffer;
+    let processed = '';
+    
+    while (remaining.length > 0) {
+      if (!thinkState.isInThinkMode) {
+        // 不在think模式中，查找<think>标签
+        const thinkStartIndex = remaining.indexOf('<think>');
+        
+        if (thinkStartIndex !== -1) {
+          // 找到了开始标签
+          // 发送开始标签前的内容到主要流
+          if (thinkStartIndex > 0) {
+            const beforeThink = remaining.slice(0, thinkStartIndex);
+            callbacks.onToken(beforeThink);
+            processed += beforeThink + '<think>';
+          } else {
+            processed += '<think>';
+          }
+          
+          // 进入think模式
+          thinkState.isInThinkMode = true;
+          remaining = remaining.slice(thinkStartIndex + 7); // 7 = '<think>'.length
+        } else {
+          // 没有找到开始标签
+          // 检查buffer末尾是否可能是不完整的标签开始
+          if (remaining.endsWith('<') || remaining.endsWith('<t') || 
+              remaining.endsWith('<th') || remaining.endsWith('<thi') || 
+              remaining.endsWith('<thin') || remaining.endsWith('<think')) {
+            // 可能是不完整的标签，保留在buffer中等待更多内容
+            thinkState.buffer = remaining;
+            return;
+          } else {
+            // 确定没有标签，发送所有内容到主要流
+            callbacks.onToken(remaining);
+            processed += remaining;
+            remaining = '';
+          }
+        }
+      } else {
+        // 在think模式中，查找</think>标签
+        const thinkEndIndex = remaining.indexOf('</think>');
+        
+        if (thinkEndIndex !== -1) {
+          // 找到了结束标签
+          // 发送结束标签前的内容到推理流
+          if (thinkEndIndex > 0) {
+            const thinkContent = remaining.slice(0, thinkEndIndex);
+            callbacks.onReasoningToken(thinkContent);
+          }
+          
+          // 退出think模式
+          thinkState.isInThinkMode = false;
+          processed += remaining.slice(0, thinkEndIndex) + '</think>';
+          remaining = remaining.slice(thinkEndIndex + 8); // 8 = '</think>'.length
+        } else {
+          // 没有找到结束标签
+          // 检查buffer末尾是否可能是不完整的结束标签
+          if (remaining.endsWith('<') || remaining.endsWith('</') || 
+              remaining.endsWith('</t') || remaining.endsWith('</th') || 
+              remaining.endsWith('</thi') || remaining.endsWith('</thin') || 
+              remaining.endsWith('</think')) {
+            // 可能是不完整的结束标签，保留在buffer中等待更多内容
+            thinkState.buffer = remaining;
+            return;
+          } else {
+            // 确定是think内容，发送到推理流
+            callbacks.onReasoningToken(remaining);
+            processed += remaining;
+            remaining = '';
+          }
+        }
+      }
+    }
+    
+    // 更新缓冲区为已处理的内容
+    thinkState.buffer = '';
+  }
+
   /**
    * 流式发送OpenAI消息
    */
@@ -300,41 +471,80 @@ export class LLMService implements ILLMService {
     modelConfig: ModelConfig,
     callbacks: StreamHandlers
   ): Promise<void> {
-    // 获取流式OpenAI实例
-    const openai = this.getOpenAIInstance(modelConfig, true);
-
-    const formattedMessages = messages.map(msg => ({
-      role: msg.role,
-      content: msg.content
-    }));
-
     try {
+      // 获取流式OpenAI实例
+      const openai = this.getOpenAIInstance(modelConfig, true);
+
+      const formattedMessages = messages.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }));
+
       console.log('开始创建流式请求...');
-      const stream = await openai.chat.completions.create({
+      const {
+        timeout, // Handled in getOpenAIInstance
+        model: llmParamsModel, // Avoid overriding main model
+        messages: llmParamsMessages, // Avoid overriding main messages
+        stream: llmParamsStream, // Avoid overriding main stream flag
+        ...restLlmParams
+      } = modelConfig.llmParams || {};
+
+      const completionConfig: any = {
         model: modelConfig.defaultModel,
         messages: formattedMessages,
-        temperature: 0.7,
-        stream: true
-      });
+        stream: true, // Essential for streaming
+        ...restLlmParams // User-defined parameters from llmParams
+      };
+      
+      // 直接使用流式响应，无需类型转换
+      const stream = await openai.chat.completions.create(completionConfig);
 
       console.log('成功获取到流式响应');
 
-      for await (const chunk of stream) {
+      // 使用类型断言来确保TypeScript知道这是流式响应
+      let accumulatedReasoning = '';
+      let accumulatedContent = '';
+      
+      // think标签状态跟踪
+      const thinkState = { isInThinkMode: false, buffer: '' };
+
+      for await (const chunk of stream as any) {
+        // 处理推理内容（SiliconFlow 等提供商在 delta 中提供 reasoning_content）
+        const reasoningContent = chunk.choices[0]?.delta?.reasoning_content || '';
+        if (reasoningContent) {
+          accumulatedReasoning += reasoningContent;
+          
+          // 如果有推理回调，发送推理内容
+          if (callbacks.onReasoningToken) {
+            callbacks.onReasoningToken(reasoningContent);
+          }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+
+        // 处理主要内容
         const content = chunk.choices[0]?.delta?.content || '';
         if (content) {
-          console.log('收到数据块:', {
-            contentLength: content.length,
-            content: content.substring(0, 50) + (content.length > 50 ? '...' : '')
-          });
-
-          callbacks.onToken(content);
-          // 添加小延迟，让UI有时间更新
+          accumulatedContent += content;
+          
+          // 使用流式think标签处理
+          this.processStreamContentWithThinkTags(content, callbacks, thinkState);
+          
           await new Promise(resolve => setTimeout(resolve, 10));
         }
       }
 
       console.log('流式响应完成');
-      callbacks.onComplete();
+      
+      // 构建完整响应
+      const response: LLMResponse = {
+        content: accumulatedContent,
+        reasoning: accumulatedReasoning || undefined,
+        metadata: {
+          model: modelConfig.defaultModel
+        }
+      };
+
+      callbacks.onComplete(response);
     } catch (error) {
       console.error('流式处理过程中出错:', error);
       callbacks.onError(error instanceof Error ? error : new Error(String(error)));
@@ -363,9 +573,15 @@ export class LLMService implements ILLMService {
     const conversationMessages = messages.filter(msg => msg.role !== 'system');
 
     // 创建聊天会话
-    const chat = model.startChat({
+    const generationConfig = this.buildGeminiGenerationConfig(modelConfig.llmParams);
+
+    const chatOptions: any = {
       history: this.formatGeminiHistory(conversationMessages)
-    });
+    };
+    if (Object.keys(generationConfig).length > 0) {
+      chatOptions.generationConfig = generationConfig;
+    }
+    const chat = model.startChat(chatOptions);
 
     // 获取最后一条用户消息
     const lastUserMessage = conversationMessages.length > 0 &&
@@ -373,9 +589,16 @@ export class LLMService implements ILLMService {
       ? conversationMessages[conversationMessages.length - 1].content
       : '';
 
-    // 如果没有用户消息，返回空字符串
+    // 如果没有用户消息，发送空响应
     if (!lastUserMessage) {
-      callbacks.onComplete();
+      const response: LLMResponse = {
+        content: '',
+        metadata: {
+          model: modelConfig.defaultModel
+        }
+      };
+      
+      callbacks.onComplete(response);
       return;
     }
 
@@ -384,23 +607,30 @@ export class LLMService implements ILLMService {
       const result = await chat.sendMessageStream(lastUserMessage);
 
       console.log('成功获取到流式响应');
+      
+      let accumulatedContent = '';
 
       for await (const chunk of result.stream) {
         const text = chunk.text();
         if (text) {
-          console.log('收到数据块:', {
-            contentLength: text.length,
-            content: text.substring(0, 50) + (text.length > 50 ? '...' : '')
-          });
-
-          await callbacks.onToken(text);
+          accumulatedContent += text;
+          callbacks.onToken(text);
           // 添加小延迟，让UI有时间更新
           await new Promise(resolve => setTimeout(resolve, 10));
         }
       }
 
       console.log('流式响应完成');
-      callbacks.onComplete();
+      
+      // 构建完整响应
+      const response: LLMResponse = {
+        content: accumulatedContent,
+        metadata: {
+          model: modelConfig.defaultModel
+        }
+      };
+
+      callbacks.onComplete(response);
     } catch (error) {
       console.error('流式处理过程中出错:', error);
       callbacks.onError(error instanceof Error ? error : new Error(String(error)));
@@ -547,9 +777,6 @@ export class LLMService implements ILLMService {
 
     // Gemini API没有直接获取模型列表的接口，返回预定义列表
     return [
-      { id: 'gemini-1.0-pro', name: 'Gemini 1.0 Pro' },
-      { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
-      { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
       { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' }
     ];
   }
@@ -560,12 +787,12 @@ export class LLMService implements ILLMService {
   private async fetchAnthropicModelsInfo(modelConfig: ModelConfig): Promise<ModelInfo[]> {
     console.log(`获取${modelConfig.name || 'Anthropic'}的模型列表`);
 
-    // Anthropic API没有公开的模型列表接口
+    // Anthropic API的获取模型列表功能未兼容openai格式，所以这里返回一个默认列表
     return [
-      { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus' },
-      { id: 'claude-3-sonnet-20240229', name: 'Claude 3 Sonnet' },
-      { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku' },
-      { id: 'claude-2.1', name: 'Claude 2.1' }
+      { id: 'claude-opus-4-20250514', name: 'Claude 4.0 Opus' },
+      { id: 'claude-sonnet-4-20250514', name: 'Claude 4.0 Sonnet' },
+      { id: 'claude-3-7-sonnet-latest', name: 'Claude 3.7 Sonnet' },
+      { id: 'claude-3-5-haiku-latest', name: 'Claude 3.5 Haiku' }
     ];
   }
 
@@ -587,6 +814,56 @@ export class LLMService implements ILLMService {
         { id: 'deepseek-coder', name: 'DeepSeek Coder' }
       ];
     }
+  }
+
+  /**
+   * 构建Gemini生成配置
+   * 
+   * 注意：此方法假设传入的 llmParams 已经通过 ModelManager.validateConfig() 
+   * 中的 validateLLMParams 验证，确保安全性
+   */
+  private buildGeminiGenerationConfig(llmParams: Record<string, any> = {}): any {
+    const {
+      temperature,
+      maxOutputTokens,
+      topP,
+      topK,
+      candidateCount,
+      stopSequences,
+      ...otherParams
+    } = llmParams;
+
+    const generationConfig: any = {};
+    
+    // 添加已知参数
+    if (temperature !== undefined) {
+      generationConfig.temperature = temperature;
+    }
+    if (maxOutputTokens !== undefined) {
+      generationConfig.maxOutputTokens = maxOutputTokens;
+    }
+    if (topP !== undefined) {
+      generationConfig.topP = topP;
+    }
+    if (topK !== undefined) {
+      generationConfig.topK = topK;
+    }
+    if (candidateCount !== undefined) {
+      generationConfig.candidateCount = candidateCount;
+    }
+    if (stopSequences !== undefined && Array.isArray(stopSequences)) {
+      generationConfig.stopSequences = stopSequences;
+    }
+
+    // 添加其他参数 (已在上层验证过安全性)
+    // 排除一些明显不属于 Gemini generationConfig 的参数
+    for (const [key, value] of Object.entries(otherParams)) {
+      if (!['timeout', 'model', 'messages', 'stream'].includes(key)) {
+        generationConfig[key] = value;
+      }
+    }
+
+    return generationConfig;
   }
 }
 

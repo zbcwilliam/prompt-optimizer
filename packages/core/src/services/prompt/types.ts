@@ -1,25 +1,42 @@
 import { PromptRecord } from '../history/types';
 import { StreamHandlers } from '../llm/types';
-import { Template } from '../template/types';
+
+/**
+ * 优化模式枚举
+ * 用于区分不同的提示词优化类型
+ */
+export type OptimizationMode = 'system' | 'user';
+
+/**
+ * 优化请求接口
+ */
+export interface OptimizationRequest {
+  optimizationMode: OptimizationMode;
+  targetPrompt: string;           // 待优化的提示词
+  templateId?: string;
+  modelKey: string;
+}
 
 /**
  * 提示词服务接口
  */
 export interface IPromptService {
-  /** 优化提示词 */
-  optimizePrompt(prompt: string, modelKey: string): Promise<string>;
+  /** 优化提示词 - 支持提示词类型和增强功能 */
+  optimizePrompt(request: OptimizationRequest): Promise<string>;
   
   /** 迭代优化提示词 */
   iteratePrompt(
     originalPrompt: string,
+    lastOptimizedPrompt: string,
     iterateInput: string,
-    modelKey: string
+    modelKey: string,
+    templateId?: string
   ): Promise<string>;
   
-  /** 测试提示词 */
+  /** 测试提示词 - 支持可选系统提示词 */
   testPrompt(
-    prompt: string,
-    testInput: string,
+    systemPrompt: string,
+    userPrompt: string,
     modelKey: string
   ): Promise<string>;
   
@@ -29,27 +46,26 @@ export interface IPromptService {
   /** 获取迭代链 */
   getIterationChain(recordId: string): Promise<PromptRecord[]>;
 
-  /** 优化提示词（流式） */
+  /** 优化提示词（流式）- 支持提示词类型和增强功能 */
   optimizePromptStream(
-    prompt: string,
-    modelKey: string,
-    template: string,
+    request: OptimizationRequest,
     callbacks: StreamHandlers
   ): Promise<void>;
 
   /** 迭代优化提示词（流式） */
   iteratePromptStream(
     originalPrompt: string,
+    lastOptimizedPrompt: string,
     iterateInput: string,
     modelKey: string,
     handlers: StreamHandlers,
-    template: Template | string
+    templateId: string
   ): Promise<void>;
 
-  /** 测试提示词（流式） */
+  /** 测试提示词（流式）- 支持可选系统提示词 */
   testPromptStream(
-    prompt: string,
-    testInput: string,
+    systemPrompt: string,
+    userPrompt: string,
     modelKey: string,
     callbacks: StreamHandlers
   ): Promise<void>;

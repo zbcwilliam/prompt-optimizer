@@ -69,20 +69,22 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { templateManager } from '@prompt-optimizer/core'
 import { clickOutside } from '../directives/clickOutside'
+import type { OptimizationMode } from '@prompt-optimizer/core'
 
 const { t } = useI18n()
 
 interface Template {
   id: string;
   name: string;
+  content: string | Array<{role: string; content: string}>;
   isBuiltin?: boolean;
   metadata: {
     description?: string;
-    templateType: 'optimize' | 'iterate';
+    templateType: 'optimize' | 'userOptimize' | 'iterate';
   };
 }
 
-type TemplateType = 'optimize' | 'iterate';
+type TemplateType = 'optimize' | 'userOptimize' | 'iterate';
 
 const props = defineProps({
   modelValue: {
@@ -92,7 +94,11 @@ const props = defineProps({
   type: {
     type: String as () => TemplateType,
     required: true,
-    validator: (value: string): boolean => ['optimize', 'iterate'].includes(value)
+    validator: (value: string): boolean => ['optimize', 'userOptimize', 'iterate'].includes(value)
+  },
+  optimizationMode: {
+    type: String as () => OptimizationMode,
+    default: 'system'
   }
 })
 
@@ -136,8 +142,10 @@ const handleResize = () => {
   updateDropdownPosition()
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener('resize', handleResize)
+  // 确保模板管理器已初始化
+  await templateManager.ensureInitialized()
   refreshTemplates()
 })
 
@@ -159,48 +167,157 @@ watch(isOpen, async (newValue) => {
 const templates = computed(() => {
   // 使用 refreshTrigger 触发重新计算
   refreshTrigger.value
+  // 检查模板管理器是否已初始化
+  if (!templateManager.isInitialized()) {
+    return []
+  }
+
+  // 使用按类型筛选方法
   return templateManager.listTemplatesByType(props.type)
 })
+
+// 添加对optimizationMode变化的监听
+watch(
+  () => props.optimizationMode,
+  (newOptimizationMode, oldOptimizationMode) => {
+    if (newOptimizationMode !== oldOptimizationMode) {
+      // optimizationMode变化时，静默刷新模板列表（避免重复toast）
+      refreshTemplates()
+    }
+  }
+)
 
 // 添加对模板列表变化的监听
 watch(
   templates,  // 监听模板列表
   (newTemplates) => {
     const currentTemplate = props.modelValue
-    // 如果当前选中的模板不在列表中，自动切换到第一个
+    // 只有在模板列表真正发生变化，且当前模板不在新列表中时才自动切换
     if (currentTemplate && !newTemplates.find(t => t.id === currentTemplate.id)) {
       const firstTemplate = newTemplates.find(t => t.metadata.templateType === props.type) || null
-      emit('update:modelValue', firstTemplate)
-      emit('select', firstTemplate, props.type)
+      // 避免重复触发：只在实际发生变化时emit
+      if (firstTemplate && firstTemplate.id !== currentTemplate?.id) {
+        emit('update:modelValue', firstTemplate)
+        // 静默选择，不显示toast
+        emit('select', firstTemplate, false)
+      }
     }
   },
   { deep: true }
 )
 
-// 改进刷新方法
+/**
+ * 深度比较模板内容
+ * 支持 string 和 Array<{role: string; content: string}> 两种类型
+ * 修复 BugBot 发现的数组引用比较问题
+ */
+const deepCompareTemplateContent = (content1: any, content2: any): boolean => {
+  // 类型相同性检查
+  if (typeof content1 !== typeof content2) {
+    return false
+  }
+  
+  // 字符串类型直接比较
+  if (typeof content1 === 'string') {
+    return content1 === content2
+  }
+  
+  // 数组类型深度比较
+  if (Array.isArray(content1) && Array.isArray(content2)) {
+    if (content1.length !== content2.length) {
+      return false
+    }
+    
+    return content1.every((item1, index) => {
+      const item2 = content2[index]
+      return item1.role === item2.role && item1.content === item2.content
+    })
+  }
+  
+  // 其他情况使用 JSON 序列化比较（兜底方案）
+  return JSON.stringify(content1) === JSON.stringify(content2)
+}
+
+/**
+ * 刷新模板列表和当前选中的模板
+ * 职责：
+ * 1. 刷新模板列表显示
+ * 2. 检查当前选中模板是否需要更新（如语言切换）
+ * 3. 处理模板不存在的情况（自动选择默认模板）
+ */
 const refreshTemplates = () => {
   refreshTrigger.value++
-  // 刷新时也检查当前选中状态
+
+  // 检查模板管理器是否已初始化
+  if (!templateManager.isInitialized()) {
+    return
+  }
+
   const currentTemplates = templateManager.listTemplatesByType(props.type)
   const currentTemplate = props.modelValue
-  if (currentTemplate && !currentTemplates.find(t => t.id === currentTemplate.id)) {
-    const firstTemplate = currentTemplates[0] || null
-    emit('update:modelValue', firstTemplate)
-    emit('select', firstTemplate, props.type)
+
+  // 处理当前选中模板的更新（主要用于语言切换场景）
+  if (currentTemplate) {
+    try {
+      const updatedTemplate = templateManager.getTemplate(currentTemplate.id)
+      // 使用深度比较检查模板内容是否发生变化（修复 BugBot 发现的数组比较问题）
+      if (updatedTemplate && (
+        updatedTemplate.name !== currentTemplate.name ||
+        !deepCompareTemplateContent(updatedTemplate.content, currentTemplate.content)
+      )) {
+        // 验证更新后的模板是否还匹配当前类型过滤器（修复类型过滤器忽略问题）
+        if (updatedTemplate.metadata.templateType === props.type) {
+          // 通过 v-model 更新父组件状态
+          emit('update:modelValue', updatedTemplate)
+          // 静默更新，不显示用户提示
+          emit('select', updatedTemplate, false)
+          return
+        }
+        // 如果类型不匹配，继续执行后续逻辑选择合适的模板
+      }
+    } catch (error) {
+      console.warn('[TemplateSelect] Failed to get updated template:', error)
+    }
+  }
+
+  // 处理模板不存在的情况：当前模板已被删除或不在当前类型列表中
+  if (!currentTemplate || !currentTemplates.find(t => t.id === currentTemplate.id)) {
+    const defaultTemplate = currentTemplates[0] || null
+    if (defaultTemplate && defaultTemplate.id !== currentTemplate?.id) {
+      emit('update:modelValue', defaultTemplate)
+      // 静默选择，不显示用户提示
+      emit('select', defaultTemplate, false)
+    }
   }
 }
 
-// 暴露刷新方法给父组件
+/**
+ * 暴露给父组件的接口
+ * 
+ * refresh(): 当外部状态变化（如语言切换、模板管理操作）时，
+ * 父组件可以调用此方法通知子组件刷新数据。
+ * 子组件负责检查数据变化并通过 v-model 更新父组件状态。
+ * 
+ * 职责分工：
+ * - 父组件：检测需要刷新的时机，调用 refresh()
+ * - 子组件：执行具体的刷新逻辑，管理自身状态，通过事件通知父组件
+ */
 defineExpose({
   refresh: refreshTemplates
 })
 
 const selectTemplate = (template: Template) => {
+  // 避免选择相同模板时的重复调用
+  if (template.id === props.modelValue?.id) {
+    isOpen.value = false
+    return
+  }
+  
   emit('update:modelValue', template)
-  emit('select', template, props.type)
+  // 用户主动选择时显示toast（传递true参数）
+  emit('select', template, true)
   isOpen.value = false
-  // 选择后刷新列表
-  refreshTemplates()
+  // 选择后不需要再次刷新列表，避免连锁反应
 }
 </script>
 

@@ -19,6 +19,7 @@ export default {
     enabled: '已启用',
     disabled: '已禁用',
     add: '添加',
+    remove: '移除',
     title: '标题',
     description: '描述',
     lastModified: '最后修改',
@@ -40,6 +41,38 @@ export default {
     selectFile: '选择文件',
     exporting: '导出中...',
     importing: '导入中...',
+    number: '数字',
+    integer: '整数',
+    optional: '可选',
+    copy: '复制',
+    content: '内容',
+    noContent: '暂无内容',
+    clickToEdit: '点击编辑',
+    generating: '生成中...',
+    generatingReasoning: '思考中...',
+    copyContent: '复制内容',
+    copyAll: '复制全部',
+    expandReasoning: '展开思考过程',
+    collapseReasoning: '收起思考过程',
+    success: '成功',
+    error: '错误',
+    warning: '警告',
+    info: '信息',
+    deleteConfirmation: '你确定要删除吗？',
+    editingDisabledDuringStream: '内容生成期间无法编辑',
+    markdown: '渲染',
+    text: '文本',
+    switchToTextView: '切换到纯文本视图',
+    switchToMarkdownView: '切换到Markdown渲染视图',
+    copied: '已复制',
+    render: '渲染',
+    source: '原文',
+    reasoning: '思考过程',
+    compare: '对比'
+  },
+  actions: {
+    copy: '复制',
+    fullscreen: '全屏'
   },
   nav: {
     home: '首页',
@@ -61,6 +94,17 @@ export default {
     originalPrompt: '原始提示词',
     optimizeModel: '优化模型',
     templateLabel: '优化提示词',
+
+    // 新增：优化模式相关
+    optimizationMode: '优化模式',
+    systemPrompt: '系统提示词优化',
+    userPrompt: '用户提示词优化',
+    systemPromptInput: '系统提示词',
+    userPromptInput: '用户提示词',
+    systemPromptPlaceholder: '请输入需要优化的系统提示词...',
+    userPromptPlaceholder: '请输入需要优化的用户提示词...',
+    systemPromptHelp: '系统提示词优化模式：优化用于定义AI助手角色、行为和回应风格的系统提示词',
+    userPromptHelp: '用户提示词优化模式：优化用户与AI交互时使用的提示词，提高交互效果和准确性'
   },
   settings: {
     title: '设置',
@@ -82,8 +126,34 @@ export default {
     clickToFetchModels: '点击箭头获取模型列表',
     apiKey: 'API密钥',
     useVercelProxy: '使用Vercel代理',
-    useVercelProxyHint: '使用Vercel代理可以解决跨域问题，但可能触发部分厂商风控，请酌情使用',
+    useVercelProxyHint: '使用Vercel代理可以解决跨域问题，但可能触发某些提供商的风控，请谨慎使用',
     addModel: '添加',
+
+    // 高级参数
+    advancedParameters: {
+      title: '高级参数',
+      noParamsConfigured: '未配置高级参数',
+      customParam: '自定义',
+      add: '添加参数',
+      select: '选择参数',
+      selectTitle: '添加高级参数',
+      custom: '自定义参数',
+      customKeyPlaceholder: '输入参数名称',
+      customValuePlaceholder: '输入参数值',
+      stopSequencesPlaceholder: '输入停止序列（逗号分隔）',
+      unitLabel: '单位',
+      currentProvider: '当前提供商',
+      customProvider: '自定义',
+      availableParams: '个可选参数',
+      noAvailableParams: '无可选参数',
+      validation: {
+        dangerousParam: '此参数名称包含潜在危险字符，不允许使用',
+        invalidNumber: '参数值必须是有效的{type}',
+        belowMin: '参数值不能小于 {min}',
+        aboveMax: '参数值不能大于 {max}',
+        mustBeInteger: '参数值必须是整数'
+      }
+    },
 
     // 占位符
     modelKeyPlaceholder: '请输入模型标识',
@@ -136,10 +206,12 @@ export default {
   },
   templateManager: {
     title: '功能提示词管理',
-    optimizeTemplates: '优化提示词',
-    iterateTemplates: '迭代提示词',
-    optimizeTemplateList: '优化提示词列表',
-    iterateTemplateList: '迭代提示词列表',
+    optimizeTemplates: '系统提示词优化模板',
+    iterateTemplates: '迭代优化模板',
+    optimizeTemplateList: '系统提示词优化模板列表',
+    iterateTemplateList: '迭代优化模板列表',
+    userOptimizeTemplates: '用户提示词优化模板',
+    userOptimizeTemplateList: '用户提示词优化模板列表',
     addTemplate: '添加',
     editTemplate: '编辑',
     deleteTemplate: '删除',
@@ -151,6 +223,43 @@ export default {
     copyTemplate: '复制',
     useTemplate: '使用此提示词',
     viewTemplate: '查看',
+    migrate: '升级',
+    help: '帮助',
+
+    // 模板格式
+    templateFormat: '模板格式',
+    simpleTemplate: '简单模板',
+    advancedTemplate: '高级模板',
+    simpleTemplateHint: '不使用模板技术，直接将模板内容作为系统提示词，用户输入作为用户消息',
+    advancedTemplateHint: '支持多消息结构和高级模板语法，可使用变量：originalPrompt、lastOptimizedPrompt、iterateInput',
+
+    // 消息模板
+    messageTemplates: '消息模板',
+    addMessage: '添加消息',
+    removeMessage: '删除消息',
+    moveUp: '上移',
+    moveDown: '下移',
+    messageContentPlaceholder: '输入消息内容，支持变量如 originalPrompt',
+
+    // 角色
+    roleSystem: '系统',
+    roleUser: '用户',
+    roleAssistant: '助手',
+
+    // 预览
+    preview: '预览',
+
+    // 迁移
+    convertToAdvanced: '转换为高级格式',
+    migrationDescription: '将简单模板转换为高级消息格式，提供更灵活的控制能力。',
+    originalTemplate: '原始模板',
+    convertedTemplate: '转换后模板',
+    applyMigration: '应用转换',
+    migrationSuccess: '模板转换成功',
+    migrationFailed: '模板转换失败',
+
+    // 语法指南
+    syntaxGuide: '语法指南',
 
     // 表单字段
     name: '提示词名称',
@@ -163,6 +272,11 @@ export default {
     contentPlaceholder: '请输入提示词内容',
     descriptionPlaceholder: '请输入提示词描述（可选）',
     searchPlaceholder: '搜索提示词...',
+
+    // 验证错误
+    noMessagesError: '高级模板至少需要一条消息',
+    emptyMessageError: '消息内容不能为空',
+    emptyContentError: '模板内容不能为空',
 
     // 确认信息
     deleteConfirm: '确定要删除此提示词吗？此操作不可恢复。',
@@ -232,9 +346,11 @@ export default {
     originalResult: '原始提示词结果',
     optimizedResult: '优化后提示词结果',
     testResult: '测试结果',
+    userPromptTest: '用户提示词测试',
     error: {
       failed: '测试失败',
-      noModel: '请先选择测试模型'
+      noModel: '请先选择测试模型',
+      noTestContent: '请输入测试内容'
     },
     enableMarkdown: '启用Markdown渲染',
     disableMarkdown: '关闭Markdown渲染',
@@ -245,6 +361,11 @@ export default {
     configure: '配置提示词',
     selected: '已选择',
     select: '选择',
+    builtinLanguage: '内置模板语言',
+    switchBuiltinLanguage: '切换内置模板语言',
+    languageChanged: '内置模板语言已切换为 {language}',
+    languageChangeError: '切换内置模板语言失败',
+    languageInitError: '初始化内置模板语言失败',
     type: {
       optimize: '优化',
       iterate: '迭代'
@@ -294,6 +415,12 @@ export default {
     confirmOptimize: '确认优化',
     iterateTitle: '迭代功能提示词',
     selectIterateTemplate: '请选择迭代提示词：',
+    diff: {
+      compare: '与上版对比',
+      exit: '退出对比',
+      enable: '启用文本对比',
+      disable: '关闭文本对比'
+    },
     error: {
       noTemplate: '请先选择迭代提示词'
     }
@@ -328,7 +455,10 @@ export default {
     error: {
       serviceInit: '服务未初始化，请稍后重试',
       optimizeFailed: '优化失败',
-      iterateFailed: '迭代优化失败',
+      iterateFailed: '迭代失败',
+      compareFailed: '对比分析失败',
+      noVersionsToCompare: '没有足够的版本进行对比',
+      noPreviousVersion: '没有前一版本可供对比',
       testFailed: '测试失败',
       testError: '测试过程中发生错误',
       loadTemplatesFailed: '加载提示词失败',
@@ -341,6 +471,7 @@ export default {
       historyChainDeleteFailed: '删除历史记录失败',
       selectTemplateFailed: '选择提示词失败：{error}',
       noOptimizeTemplate: '请先选择优化提示词',
+      noOptimizeModel: '请先选择优化模型',
       noIterateTemplate: '请先选择迭代提示词',
       incompleteTestInfo: '请填写完整的测试信息',
       noDefaultTemplate: '无法加载默认提示词',
@@ -350,11 +481,14 @@ export default {
     },
     success: {
       optimizeSuccess: '优化成功',
+      iterateComplete: '迭代优化完成',
       iterateSuccess: '迭代优化成功',
       modelSelected: '已选择模型: {name}',
       templateSelected: '已选择{type}提示词: {name}',
       historyClear: '历史记录已清空',
-      historyChainDeleted: '历史记录已删除'
+      historyChainDeleted: '历史记录已删除',
+      exitCompare: '已退出对比模式',
+      compareEnabled: '对比模式已启用'
     },
     warn: {
       loadOptimizeTemplateFailed: '加载已保存的优化提示词失败',
@@ -397,5 +531,50 @@ export default {
       successWithRefresh: '数据导入成功，页面将刷新以更新数据'
     },
     warning: '导入数据将覆盖现有的历史记录、模型配置、自定义提示词和所有用户设置（包括主题、语言偏好等），请确保已备份重要数据。'
+  },
+  params: {
+    "temperature": {
+      "label": "温度 (Temperature)",
+      "description": "控制随机性：较低的值（例如0.2）使输出更集中和确定，较高的值（例如0.8）使其更随机。"
+    },
+    "top_p": {
+      "label": "Top P (核心采样)",
+      "description": "核心采样。仅考虑累积概率达到Top P阈值的Token。例如，0.1表示仅考虑构成最高10%概率质量的Token。"
+    },
+    "max_tokens": {
+      "label": "最大Token数",
+      "description": "在补全中生成的最大Token数量。"
+    },
+    "presence_penalty": {
+      "label": "存在惩罚 (Presence Penalty)",
+      "description": "介于-2.0和2.0之间的数字。正值会根据新Token是否已在文本中出现来惩罚它们，增加模型谈论新主题的可能性。"
+    },
+    "frequency_penalty": {
+      "label": "频率惩罚 (Frequency Penalty)",
+      "description": "介于-2.0和2.0之间的数字。正值会根据新Token在文本中已出现的频率来惩罚它们，降低模型逐字重复相同行的可能性。"
+    },
+    "timeout": {
+      "label": "超时时间 (毫秒)",
+      "description_openai": "OpenAI客户端连接的请求超时时间（毫秒）。"
+    },
+    "maxOutputTokens": {
+      "label": "最大输出Token数",
+      "description": "模型在单个响应中可以输出的最大Token数。"
+    },
+    "top_k": {
+      "label": "Top K (K选顶)",
+      "description": "将下一个Token的选择范围限制为K个最可能的Token。有助于减少无意义Token的生成。"
+    },
+    "candidateCount": {
+      "label": "候选数量",
+      "description": "返回的生成响应数量。必须介于1和8之间。"
+    },
+    "stopSequences": {
+      "label": "停止序列",
+      "description": "遇到时将停止输出生成的自定义字符串。用逗号分隔多个序列。"
+    },
+    "tokens": {
+      "unit": "令牌"
+    }
   }
 }; 

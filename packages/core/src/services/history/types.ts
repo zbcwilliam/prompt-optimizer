@@ -1,3 +1,5 @@
+import type { OptimizationMode } from '../prompt/types';
+
 /**
  * 提示词记录类型
  */
@@ -36,7 +38,10 @@ export interface PromptRecord {
   /** 迭代时的修改说明 */
   iterationNote?: string;
   /** 元数据 */
-  metadata?: Record<string, any>;
+  metadata?: {
+    optimizationMode?: OptimizationMode;  // 优化模式
+    [key: string]: any;                   // 保持扩展性
+  };
 }
 
 /**
@@ -67,6 +72,8 @@ export interface IHistoryManager {
   clearHistory(): Promise<void>;
   /** 获取所有记录链 */
   getAllChains(): Promise<PromptRecordChain[]>;
+  /** 获取指定链 */
+  getChain(chainId: string): Promise<PromptRecordChain>;
   /** 创建新的记录链 */
   createNewChain(record: Omit<PromptRecord, 'chainId' | 'version' | 'previousId'>): Promise<PromptRecordChain>;
   /** 添加迭代记录 */

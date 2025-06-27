@@ -47,11 +47,13 @@ export const defaultModels: Record<string, ModelConfig> = {
   openai: {
     name: 'OpenAI',
     baseURL: 'https://api.openai.com/v1',
-    models: ['gpt-4', 'gpt-3.5-turbo'],
-    defaultModel: 'gpt-3.5-turbo',
+    models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo', 'o1', 'o1-mini', 'o1-preview', 'o3', 'o4-mini'],
+    defaultModel: 'gpt-4o-mini',
     apiKey: OPENAI_API_KEY,
     enabled: !!OPENAI_API_KEY,
-    provider: 'openai'
+    provider: 'openai',
+    llmParams: {
+    }
   },
   gemini: {
     name: 'Gemini',
@@ -60,25 +62,31 @@ export const defaultModels: Record<string, ModelConfig> = {
     defaultModel: 'gemini-2.0-flash',
     apiKey: GEMINI_API_KEY,
     enabled: !!GEMINI_API_KEY,
-    provider: 'gemini'
+    provider: 'gemini',
+    llmParams: {
+    }
   },
   deepseek: {
     name: 'DeepSeek',
     baseURL: 'https://api.deepseek.com/v1',
-    models: ['deepseek-chat'],
+    models: ['deepseek-chat', 'deepseek-reasoner'],
     defaultModel: 'deepseek-chat',
     apiKey: DEEPSEEK_API_KEY,
     enabled: !!DEEPSEEK_API_KEY,
-    provider: 'deepseek'
+    provider: 'deepseek',
+    llmParams: {
+    }
   },
   siliconflow: {
     name: 'SiliconFlow',
     baseURL: 'https://api.siliconflow.cn/v1',
-    models: ['Pro/deepseek-ai/DeepSeek-V3'],
-    defaultModel: 'Pro/deepseek-ai/DeepSeek-V3',
+    models: ['Qwen/Qwen3-8B'],
+    defaultModel: 'Qwen/Qwen3-8B',
     apiKey: SILICONFLOW_API_KEY,
     enabled: !!SILICONFLOW_API_KEY,
-    provider: 'siliconflow'
+    provider: 'siliconflow',
+    llmParams: {
+    }
   },
   zhipu: {
     name: 'Zhipu',
@@ -87,7 +95,9 @@ export const defaultModels: Record<string, ModelConfig> = {
     defaultModel: 'glm-4-flash',
     apiKey: ZHIPU_API_KEY,
     enabled: !!ZHIPU_API_KEY,
-    provider: 'zhipu'
+    provider: 'zhipu',
+    llmParams: {
+    }
   },
   custom: {
     name: 'Custom',
@@ -96,6 +106,8 @@ export const defaultModels: Record<string, ModelConfig> = {
     defaultModel: CUSTOM_API_MODEL,
     apiKey: CUSTOM_API_KEY,
     enabled: !!CUSTOM_API_KEY,
-    provider: 'custom'
+    provider: 'custom',
+    llmParams: {
+    }
   }
 }; 

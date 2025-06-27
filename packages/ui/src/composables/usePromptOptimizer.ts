@@ -1,17 +1,19 @@
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, nextTick } from 'vue'
 import { useToast } from './useToast'
 import { useI18n } from 'vue-i18n'
 import { useStorage } from './useStorage'
 import { v4 as uuidv4 } from 'uuid'
 import type { Ref } from 'vue'
-import type { 
+import type {
   ModelConfig,
   ModelManager,
   IHistoryManager,
   Template,
   PromptRecordChain,
   IPromptService,
-  ITemplateManager
+  ITemplateManager,
+  OptimizationMode,
+  OptimizationRequest
 } from '@prompt-optimizer/core'
 
 
@@ -22,9 +24,14 @@ export function usePromptOptimizer(
   templateManager: ITemplateManager,
   historyManager: IHistoryManager,
   promptService: Ref<IPromptService | null>,
-  selectedOptimizeModel: Ref<string>,
-  selectedTestModel: Ref<string>
+  selectedOptimizationMode?: Ref<OptimizationMode>,    // 新增：优化模式
+  selectedOptimizeModel?: Ref<string>,                 // 新增：优化模型选择
+  selectedTestModel?: Ref<string>                      // 新增：测试模型选择
 ) {
+  // 如果没有传入参数，使用默认值
+  const optimizationMode = selectedOptimizationMode || ref<OptimizationMode>('system')
+  const optimizeModel = selectedOptimizeModel || ref('')
+  const testModel = selectedTestModel || ref('')
   const toast = useToast()
   const { t } = useI18n()
   const storage = useStorage()
@@ -32,17 +39,21 @@ export function usePromptOptimizer(
   // 状态
   const prompt = ref('')
   const optimizedPrompt = ref('')
+  const optimizedReasoning = ref('') // 新增：优化推理内容
   const isOptimizing = ref(false)
   const isIterating = ref(false)
-  const selectedOptimizeTemplate = ref<Template | null>(null)
+  const isInitializing = ref(true) // 新增：初始化状态标志
+  const selectedOptimizeTemplate = ref<Template | null>(null)  // 系统提示词优化模板
+  const selectedUserOptimizeTemplate = ref<Template | null>(null)  // 用户提示词优化模板
   const selectedIterateTemplate = ref<Template | null>(null)
   const currentChainId = ref('')
   const currentVersions = ref<PromptChain['versions']>([])
   const currentVersionId = ref('')
   
-  // 本地存储key
+  // 本地存储key - 分离系统和用户提示词优化模板
   const STORAGE_KEYS = {
-    OPTIMIZE_TEMPLATE: 'app:selected-optimize-template',
+    SYSTEM_OPTIMIZE_TEMPLATE: 'app:selected-system-optimize-template',
+    USER_OPTIMIZE_TEMPLATE: 'app:selected-user-optimize-template',
     ITERATE_TEMPLATE: 'app:selected-iterate-template'
   } as const
   
@@ -53,45 +64,71 @@ export function usePromptOptimizer(
       toast.error(t('toast.error.serviceInit'))
       return
     }
-    
-    if (!selectedOptimizeTemplate.value) {
+
+    // 根据优化模式选择对应的模板
+    const currentTemplate = optimizationMode.value === 'system' 
+      ? selectedOptimizeTemplate.value 
+      : selectedUserOptimizeTemplate.value
+
+    if (!currentTemplate) {
       toast.error(t('toast.error.noOptimizeTemplate'))
       return
     }
-    
+
+    if (!optimizeModel.value) {
+      toast.error(t('toast.error.noOptimizeModel'))
+      return
+    }
+
+    // 在开始优化前立即清空状态，确保没有竞态条件
     isOptimizing.value = true
-    optimizedPrompt.value = ''  // Clear previous result
+    optimizedPrompt.value = ''  // 强制同步清空
+    optimizedReasoning.value = '' // 强制同步清空
     
+    // 等待一个微任务确保状态更新完成
+    await nextTick()
+
     try {
-      // Use streaming call
+      // 构建优化请求
+      const request: OptimizationRequest = {
+        optimizationMode: optimizationMode.value,
+        targetPrompt: prompt.value,
+        templateId: currentTemplate.id,
+        modelKey: optimizeModel.value
+      }
+
+      // 使用重构后的优化API
       await promptService.value.optimizePromptStream(
-        prompt.value, 
-        selectedOptimizeModel.value,
-        selectedOptimizeTemplate.value.content,
+        request,
         {
           onToken: (token: string) => {
             optimizedPrompt.value += token
           },
+          onReasoningToken: (reasoningToken: string) => {
+            optimizedReasoning.value += reasoningToken
+          },
           onComplete: async () => {
-            if (!selectedOptimizeTemplate.value) return
-            
+            if (!currentTemplate) return
+
             try {
-              // Create new record chain (异步调用需要await)
+              // Create new record chain with enhanced metadata
               const newRecord = await historyManager.createNewChain({
                 id: uuidv4(),
                 originalPrompt: prompt.value,
                 optimizedPrompt: optimizedPrompt.value,
                 type: 'optimize',
-                modelKey: selectedOptimizeModel.value,
-                templateId: selectedOptimizeTemplate.value.id,
+                modelKey: optimizeModel.value,
+                templateId: currentTemplate.id,
                 timestamp: Date.now(),
-                metadata: {}
+                metadata: {
+                  optimizationMode: optimizationMode.value
+                }
               });
-              
+
               currentChainId.value = newRecord.chainId;
               currentVersions.value = newRecord.versions;
               currentVersionId.value = newRecord.currentRecord.id;
-              
+
               toast.success(t('toast.success.optimizeSuccess'))
             } catch (error) {
               console.error('创建历史记录失败:', error)
@@ -116,8 +153,8 @@ export function usePromptOptimizer(
   }
   
   // 迭代优化
-  const handleIteratePrompt = async ({ originalPrompt, iterateInput }: { originalPrompt: string, iterateInput: string }) => {
-    if (!originalPrompt || !iterateInput || isIterating.value) return
+  const handleIteratePrompt = async ({ originalPrompt, optimizedPrompt: lastOptimizedPrompt, iterateInput }: { originalPrompt: string, optimizedPrompt: string, iterateInput: string }) => {
+    if (!originalPrompt || !lastOptimizedPrompt || !iterateInput || isIterating.value) return
     if (!promptService.value) {
       toast.error(t('toast.error.serviceInit'))
       return
@@ -127,126 +164,286 @@ export function usePromptOptimizer(
       return
     }
 
+    // 在开始迭代前立即清空状态，确保没有竞态条件
     isIterating.value = true
-    optimizedPrompt.value = ''  // Clear previous result
+    optimizedPrompt.value = ''  // 强制同步清空
+    optimizedReasoning.value = '' // 强制同步清空
+    
+    // 等待一个微任务确保状态更新完成
+    await nextTick()
     
     try {
       await promptService.value.iteratePromptStream(
         originalPrompt,
+        lastOptimizedPrompt,
         iterateInput,
-        selectedOptimizeModel.value,
+        optimizeModel.value,
         {
           onToken: (token: string) => {
             optimizedPrompt.value += token
           },
-          onComplete: async () => {
-            if (!selectedIterateTemplate.value) return
+          onReasoningToken: (reasoningToken: string) => {
+            optimizedReasoning.value += reasoningToken
+          },
+          onComplete: async (response) => {
+            if (!selectedIterateTemplate.value) {
+              isIterating.value = false
+              return
+            }
             
             try {
+              // 使用正确的addIteration方法来保存迭代历史
               const updatedChain = await historyManager.addIteration({
                 chainId: currentChainId.value,
                 originalPrompt: originalPrompt,
                 optimizedPrompt: optimizedPrompt.value,
                 iterationNote: iterateInput,
-                modelKey: selectedOptimizeModel.value,
+                modelKey: optimizeModel.value,
                 templateId: selectedIterateTemplate.value.id
               });
               
-              currentVersions.value = updatedChain.versions;
-              currentVersionId.value = updatedChain.currentRecord.id;
+              currentVersions.value = updatedChain.versions
+              currentVersionId.value = updatedChain.currentRecord.id
               
-              toast.success(t('toast.success.iterateSuccess'))
+              toast.success(t('toast.success.iterateComplete'))
             } catch (error) {
-              console.error('添加迭代记录失败:', error)
-              toast.error('添加迭代记录失败: ' + (error as Error).message)
+              console.error('[History] 迭代记录失败:', error)
+              toast.warning(t('toast.warning.historyFailed'))
             } finally {
               isIterating.value = false
             }
           },
           onError: (error: Error) => {
-            toast.error(error.message || t('toast.error.iterateFailed'))
+            console.error('[Iterate] 迭代失败:', error)
+            toast.error(t('toast.error.iterateFailed'))
+            isIterating.value = false
           }
         },
-        selectedIterateTemplate.value
-      );
-    } catch (error: any) {
-      console.error(t('toast.error.iterateFailed'), error)
-      toast.error(error.message || t('toast.error.iterateFailed'))
-    } finally {
+        selectedIterateTemplate.value.id
+      )
+    } catch (error) {
+      console.error('[Iterate] 迭代失败:', error)
+      toast.error(t('toast.error.iterateFailed'))
       isIterating.value = false
     }
   }
   
-  // 切换版本
-  const handleSwitchVersion = (version: PromptChain['versions'][number]) => {
+  // 切换版本 - 增强版本，确保强制更新
+  const handleSwitchVersion = async (version: PromptChain['versions'][number]) => {
+    // 强制更新内容，确保UI同步
     optimizedPrompt.value = version.optimizedPrompt;
     currentVersionId.value = version.id;
-  }
-  
-  // 保存提示词选择
-  const saveTemplateSelection = async (template: Template, type: 'optimize' | 'iterate') => {
-    try {
-      await storage.setItem(
-        type === 'optimize' ? STORAGE_KEYS.OPTIMIZE_TEMPLATE : STORAGE_KEYS.ITERATE_TEMPLATE,
-        template.id
-      )
-    } catch (error) {
-      console.error(`保存模板选择失败 (${type}):`, error)
-    }
+    
+    // 等待一个微任务确保状态更新完成
+    await nextTick()
   }
   
   // 初始化提示词选择
   const initTemplateSelection = async () => {
     try {
-      // 加载优化提示词
-      const optimizeTemplateId = await storage.getItem(STORAGE_KEYS.OPTIMIZE_TEMPLATE)
-      if (optimizeTemplateId) {
-        try {
-          const optimizeTemplate = templateManager.getTemplate(optimizeTemplateId)
-          if (optimizeTemplate) {
-            selectedOptimizeTemplate.value = optimizeTemplate
+      // 确保模板管理器已初始化
+      await templateManager.ensureInitialized()
+      
+      // 加载系统提示词优化模板
+      const loadSystemOptimizeTemplate = async () => {
+        const savedTemplateId = await storage.getItem(STORAGE_KEYS.SYSTEM_OPTIMIZE_TEMPLATE)
+        console.log('[loadSystemOptimizeTemplate] 开始加载，保存的模板ID:', savedTemplateId || '无')
+        
+        let needsClearAndSave = false
+        
+        if (savedTemplateId) {
+          try {
+            const template = templateManager.getTemplate(savedTemplateId)
+            if (template && template.metadata.templateType === 'optimize') {
+              selectedOptimizeTemplate.value = template
+              console.log('[loadSystemOptimizeTemplate] 成功加载已保存的模板:', template.name)
+              return
+            } else {
+              console.warn('[loadSystemOptimizeTemplate] 找到模板但类型不匹配:', {
+                templateId: savedTemplateId,
+                found: !!template,
+                expectedType: 'optimize',
+                actualType: template?.metadata.templateType || 'unknown'
+              })
+              needsClearAndSave = true
+            }
+          } catch (error) {
+            console.warn('[loadSystemOptimizeTemplate] 加载已保存模板失败:', error)
+            needsClearAndSave = true
           }
-        } catch (error) {
-          console.warn(t('toast.warn.loadOptimizeTemplateFailed'), error)
+        } else {
+          console.log('[loadSystemOptimizeTemplate] 没有保存的模板ID，将使用默认模板')
         }
-      }
-      
-      // 如果没有已保存的提示词或加载失败，使用该类型的第一个提示词
-      if (!selectedOptimizeTemplate.value) {
-        const optimizeTemplates = templateManager.listTemplatesByType('optimize')
-        if (optimizeTemplates.length > 0) {
-          selectedOptimizeTemplate.value = optimizeTemplates[0]
-        }
-      }
-      
-      // 加载迭代提示词
-      const iterateTemplateId = await storage.getItem(STORAGE_KEYS.ITERATE_TEMPLATE)
-      if (iterateTemplateId) {
-        try {
-          const iterateTemplate = templateManager.getTemplate(iterateTemplateId)
-          if (iterateTemplate) {
-            selectedIterateTemplate.value = iterateTemplate
+
+        // 回退到第一个可用的系统优化模板
+        const templates = templateManager.listTemplatesByType('optimize')
+        console.log('[loadSystemOptimizeTemplate] 可用的系统优化模板数量:', templates.length)
+        
+        if (templates.length > 0) {
+          selectedOptimizeTemplate.value = templates[0]
+          const reason = savedTemplateId ? '保存的模板加载失败' : '首次使用，没有保存的模板'
+          console.log(`[loadSystemOptimizeTemplate] 回退到默认模板: ${templates[0].name} (原因: ${reason})`)
+          
+          // 如果需要清除无效数据或首次使用，保存新的选择
+          if (needsClearAndSave || !savedTemplateId) {
+            try {
+              await storage.setItem(STORAGE_KEYS.SYSTEM_OPTIMIZE_TEMPLATE, templates[0].id)
+              console.log('[loadSystemOptimizeTemplate] 已持久化新的模板选择:', templates[0].id)
+            } catch (error) {
+              console.error('[loadSystemOptimizeTemplate] 保存新模板选择失败:', error)
+            }
           }
-        } catch (error) {
-          console.warn(t('toast.warn.loadIterateTemplateFailed'), error)
-        }
-      }
-      
-      // 如果没有已保存的提示词或加载失败，使用该类型的第一个提示词
-      if (!selectedIterateTemplate.value) {
-        const iterateTemplates = templateManager.listTemplatesByType('iterate')
-        if (iterateTemplates.length > 0) {
-          selectedIterateTemplate.value = iterateTemplates[0]
+          
+          if (savedTemplateId && needsClearAndSave) {
+            // 只有在之前有保存过模板但加载失败时才显示警告
+            toast.warning(`系统优化模板加载失败，已切换到默认模板: ${templates[0].name}`)
+          }
+        } else {
+          console.error('[loadSystemOptimizeTemplate] 没有可用的系统优化模板')
+          toast.error('没有可用的系统优化模板')
         }
       }
 
-      // 如果仍然无法加载任何提示词，显示错误
-      if (!selectedOptimizeTemplate.value || !selectedIterateTemplate.value) {
-        throw new Error(t('toast.error.noDefaultTemplate'))
+      // 加载用户提示词优化模板
+      const loadUserOptimizeTemplate = async () => {
+        const savedTemplateId = await storage.getItem(STORAGE_KEYS.USER_OPTIMIZE_TEMPLATE)
+        console.log('[loadUserOptimizeTemplate] 开始加载，保存的模板ID:', savedTemplateId || '无')
+        
+        let needsClearAndSave = false
+        
+        if (savedTemplateId) {
+          try {
+            const template = templateManager.getTemplate(savedTemplateId)
+            if (template && template.metadata.templateType === 'userOptimize') {
+              selectedUserOptimizeTemplate.value = template
+              console.log('[loadUserOptimizeTemplate] 成功加载已保存的模板:', template.name)
+              return
+            } else {
+              console.warn('[loadUserOptimizeTemplate] 找到模板但类型不匹配:', {
+                templateId: savedTemplateId,
+                found: !!template,
+                expectedType: 'userOptimize',
+                actualType: template?.metadata.templateType || 'unknown'
+              })
+              needsClearAndSave = true
+            }
+          } catch (error) {
+            console.warn('[loadUserOptimizeTemplate] 加载已保存模板失败:', error)
+            needsClearAndSave = true
+          }
+        } else {
+          console.log('[loadUserOptimizeTemplate] 没有保存的模板ID，将使用默认模板')
+        }
+
+        // 回退到第一个可用的用户优化模板
+        const templates = templateManager.listTemplatesByType('userOptimize')
+        console.log('[loadUserOptimizeTemplate] 可用的用户优化模板数量:', templates.length)
+        
+        if (templates.length > 0) {
+          selectedUserOptimizeTemplate.value = templates[0]
+          const reason = savedTemplateId ? '保存的模板加载失败' : '首次使用，没有保存的模板'
+          console.log(`[loadUserOptimizeTemplate] 回退到默认模板: ${templates[0].name} (原因: ${reason})`)
+          
+          // 如果需要清除无效数据或首次使用，保存新的选择
+          if (needsClearAndSave || !savedTemplateId) {
+            try {
+              await storage.setItem(STORAGE_KEYS.USER_OPTIMIZE_TEMPLATE, templates[0].id)
+              console.log('[loadUserOptimizeTemplate] 已持久化新的模板选择:', templates[0].id)
+            } catch (error) {
+              console.error('[loadUserOptimizeTemplate] 保存新模板选择失败:', error)
+            }
+          }
+          
+          if (savedTemplateId && needsClearAndSave) {
+            // 只有在之前有保存过模板但加载失败时才显示警告
+            toast.warning(`用户优化模板加载失败，已切换到默认模板: ${templates[0].name}`)
+          }
+        } else {
+          console.error('[loadUserOptimizeTemplate] 没有可用的用户优化模板')
+          toast.error('没有可用的用户优化模板')
+        }
+      }
+
+      // 加载迭代模板
+      const loadIterateTemplate = async () => {
+        const savedTemplateId = await storage.getItem(STORAGE_KEYS.ITERATE_TEMPLATE)
+        console.log('[loadIterateTemplate] 开始加载，保存的模板ID:', savedTemplateId || '无')
+        
+        let needsClearAndSave = false
+        
+        if (savedTemplateId) {
+          try {
+            const template = templateManager.getTemplate(savedTemplateId)
+            if (template && template.metadata.templateType === 'iterate') {
+              selectedIterateTemplate.value = template
+              console.log('[loadIterateTemplate] 成功加载已保存的模板:', template.name)
+              return
+            } else {
+              console.warn('[loadIterateTemplate] 找到模板但类型不匹配:', {
+                templateId: savedTemplateId,
+                found: !!template,
+                expectedType: 'iterate',
+                actualType: template?.metadata.templateType || 'unknown'
+              })
+              needsClearAndSave = true
+            }
+          } catch (error) {
+            console.warn('[loadIterateTemplate] 加载已保存模板失败:', error)
+            needsClearAndSave = true
+          }
+        } else {
+          console.log('[loadIterateTemplate] 没有保存的模板ID，将使用默认模板')
+        }
+
+        // 回退到第一个可用的迭代模板
+        const templates = templateManager.listTemplatesByType('iterate')
+        console.log('[loadIterateTemplate] 可用的迭代模板数量:', templates.length)
+        
+        if (templates.length > 0) {
+          selectedIterateTemplate.value = templates[0]
+          const reason = savedTemplateId ? '保存的模板加载失败' : '首次使用，没有保存的模板'
+          console.log(`[loadIterateTemplate] 回退到默认模板: ${templates[0].name} (原因: ${reason})`)
+          
+          // 如果需要清除无效数据或首次使用，保存新的选择
+          if (needsClearAndSave || !savedTemplateId) {
+            try {
+              await storage.setItem(STORAGE_KEYS.ITERATE_TEMPLATE, templates[0].id)
+              console.log('[loadIterateTemplate] 已持久化新的模板选择:', templates[0].id)
+            } catch (error) {
+              console.error('[loadIterateTemplate] 保存新模板选择失败:', error)
+            }
+          }
+          
+          if (savedTemplateId && needsClearAndSave) {
+            // 只有在之前有保存过模板但加载失败时才显示警告
+            toast.warning(`迭代模板加载失败，已切换到默认模板: ${templates[0].name}`)
+          }
+        } else {
+          console.error('[loadIterateTemplate] 没有可用的迭代模板')
+          toast.error('没有可用的迭代模板')
+        }
+      }
+
+      // 并行加载所有三种模板
+      await Promise.all([
+        loadSystemOptimizeTemplate(),
+        loadUserOptimizeTemplate(),
+        loadIterateTemplate()
+      ])
+
+      // 检查是否所有模板都成功加载
+      if (!selectedOptimizeTemplate.value || !selectedUserOptimizeTemplate.value || !selectedIterateTemplate.value) {
+        console.warn('Some templates failed to load:', {
+          systemOptimize: !!selectedOptimizeTemplate.value,
+          userOptimize: !!selectedUserOptimizeTemplate.value,
+          iterate: !!selectedIterateTemplate.value
+        })
       }
     } catch (error) {
-      console.error(t('toast.error.loadTemplateFailed'), error)
-      toast.error(t('toast.error.loadTemplateFailed'))
+      console.error('加载模板失败', error)
+      toast.error('加载模板失败')
+    } finally {
+      isInitializing.value = false // 初始化完成
     }
   }
 
@@ -255,23 +452,93 @@ export function usePromptOptimizer(
     await initTemplateSelection()
   })
 
+  // 保存提示词选择 - 修复版本，根据传入的类型决定存储键
+  const saveTemplateSelection = async (template: Template, type: 'system-optimize' | 'user-optimize' | 'iterate') => {
+    try {
+      let storageKey: string;
+      switch (type) {
+        case 'system-optimize':
+          storageKey = STORAGE_KEYS.SYSTEM_OPTIMIZE_TEMPLATE;
+          break;
+        case 'user-optimize':
+          storageKey = STORAGE_KEYS.USER_OPTIMIZE_TEMPLATE;
+          break;
+        case 'iterate':
+          storageKey = STORAGE_KEYS.ITERATE_TEMPLATE;
+          break;
+        default:
+          console.warn('未知的模板类型，无法保存:', type)
+          return
+      }
+      
+      console.log('[saveTemplateSelection] 正在保存选择:', {
+        templateName: template.name,
+        templateId: template.id,
+        storageKey: storageKey
+      })
+
+      await storage.setItem(storageKey, template.id)
+    } catch (error) {
+      console.error(`保存模板选择失败:`, error)
+    }
+  }
+  
+  // 使用 watch 监听模板变化，并持久化
+  watch(selectedOptimizeTemplate, (newTemplate, oldTemplate) => {
+    if (isInitializing.value) return // 初始化期间不触发
+    if (newTemplate && oldTemplate && newTemplate.id !== oldTemplate?.id) {
+      saveTemplateSelection(newTemplate, 'system-optimize')
+      toast.success(t('toast.success.templateSelected', {
+        type: '系统提示词优化',
+        name: newTemplate.name
+      }))
+    }
+  })
+
+  watch(selectedUserOptimizeTemplate, (newTemplate, oldTemplate) => {
+    if (isInitializing.value) return // 初始化期间不触发
+    if (newTemplate && oldTemplate && newTemplate.id !== oldTemplate?.id) {
+      saveTemplateSelection(newTemplate, 'user-optimize')
+      toast.success(t('toast.success.templateSelected', {
+        type: '用户提示词优化',
+        name: newTemplate.name
+      }))
+    }
+  })
+
+  watch(selectedIterateTemplate, (newTemplate, oldTemplate) => {
+    if (isInitializing.value) return // 初始化期间不触发
+    if (newTemplate && oldTemplate && newTemplate.id !== oldTemplate?.id) {
+      saveTemplateSelection(newTemplate, 'iterate')
+      toast.success(t('toast.success.templateSelected', {
+        type: t('common.iterate'),
+        name: newTemplate.name
+      }))
+    }
+  })
+
+
+
   return {
     // 状态
     prompt,
     optimizedPrompt,
+    optimizedReasoning,
     isOptimizing,
     isIterating,
     selectedOptimizeTemplate,
+    selectedUserOptimizeTemplate,
     selectedIterateTemplate,
+    selectedOptimizeModel: optimizeModel,
+    selectedTestModel: testModel,
     currentChainId,
     currentVersions,
     currentVersionId,
-    
+
     // 方法
     handleOptimizePrompt,
     handleIteratePrompt,
     handleSwitchVersion,
-    saveTemplateSelection,
     initTemplateSelection
   }
 } 

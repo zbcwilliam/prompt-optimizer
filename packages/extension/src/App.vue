@@ -28,19 +28,29 @@
         :text="$t('nav.dataManager')"
         @click="showDataManager = true"
       />
+      <!-- GitHub 按钮 -->
+      <button
+        @click="openGithubRepo"
+        class="theme-icon-button"
+        title="GitHub"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M12 0C5.374 0 0 5.373 0 12 0 17.302 3.438 21.8 8.207 23.387c.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/>
+        </svg>
+      </button>
       <LanguageSwitchUI />
     </template>
 
     <!-- 主要内容插槽 -->
     <!-- 提示词区 -->
-    <ContentCardUI>
+    <ContentCardUI class="flex-1 min-w-0 flex flex-col">
       <!-- 输入区域 -->
       <div class="flex-none">
         <InputPanelUI
           v-model="prompt"
           v-model:selectedModel="selectedOptimizeModel"
-          :label="$t('promptOptimizer.originalPrompt')"
-          :placeholder="$t('promptOptimizer.inputPlaceholder')"
+          :label="promptInputLabel"
+          :placeholder="promptInputPlaceholder"
           :model-label="$t('promptOptimizer.optimizeModel')"
           :template-label="$t('promptOptimizer.templateLabel')"
           :button-text="$t('promptOptimizer.optimize')"
@@ -50,6 +60,12 @@
           @submit="handleOptimizePrompt"
           @configModel="showConfig = true"
         >
+          <template #optimization-mode-selector>
+            <OptimizationModeSelectorUI
+              v-model="selectedOptimizationMode"
+              @change="handleOptimizationModeChange"
+            />
+          </template>
           <template #model-select>
             <ModelSelectUI
               ref="optimizeModelSelect"
@@ -61,19 +77,23 @@
           </template>
           <template #template-select>
             <TemplateSelectUI
-              v-model="selectedOptimizeTemplate"
-              type="optimize"
-              @manage="openTemplateManager('optimize')"
-              @select="handleTemplateSelect"
+              ref="templateSelectRef"
+              v-model="currentSelectedTemplate"
+              :type="selectedOptimizationMode === 'system' ? 'optimize' : 'userOptimize'"
+              :optimization-mode="selectedOptimizationMode"
+              @manage="openTemplateManager(selectedOptimizationMode === 'system' ? 'optimize' : 'userOptimize')"
             />
           </template>
         </InputPanelUI>
       </div>
 
       <!-- 优化结果区域 -->
-      <div class="flex-1 min-h-0 overflow-y-auto">
+      <div class="flex-1 min-h-0">
         <PromptPanelUI
           v-model:optimized-prompt="optimizedPrompt"
+          :reasoning="optimizedReasoning"
+          :original-prompt="prompt"
+          :is-optimizing="isOptimizing"
           :is-iterating="isIterating"
           v-model:selected-iterate-template="selectedIterateTemplate"
           :versions="currentVersions"
@@ -87,9 +107,11 @@
 
     <!-- 测试区域 -->
     <TestPanelUI
+      class="flex-1 min-w-0 flex flex-col"
       :prompt-service="promptServiceRef"
       :original-prompt="prompt"
       :optimized-prompt="optimizedPrompt"
+      :optimization-mode="selectedOptimizationMode"
       v-model="selectedTestModel"
       @showConfig="showConfig = true"
     />
@@ -111,10 +133,11 @@
         <TemplateManagerUI
           v-if="showTemplates"
           :template-type="currentType"
+          :optimization-mode="selectedOptimizationMode"
           :selected-optimize-template="selectedOptimizeTemplate"
+          :selected-user-optimize-template="selectedUserOptimizeTemplate"
           :selected-iterate-template="selectedIterateTemplate"
           @close="handleTemplateManagerClose"
-          @select="handleTemplateSelect"
         />
       </Teleport>
 
@@ -138,40 +161,39 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   // UI组件
-  ToastUI,
   ModelManagerUI,
   ThemeToggleUI,
-  OutputPanelUI,
-  PromptPanelUI,
   TemplateManagerUI,
-  TemplateSelectUI,
-  ModelSelectUI,
   HistoryDrawerUI,
-  InputPanelUI,
   MainLayoutUI,
-  ContentCardUI,
   ActionButtonUI,
   TestPanelUI,
   LanguageSwitchUI,
   DataManagerUI,
+  InputPanelUI,
+  PromptPanelUI,
+  OptimizationModeSelectorUI,
+  ModelSelectUI,
+  TemplateSelectUI,
+  ContentCardUI,
   // composables
   usePromptOptimizer,
-  usePromptTester,
   useToast,
   usePromptHistory,
   useServiceInitializer,
-  useTemplateManager,
   useModelManager,
   useHistoryManager,
   useModelSelectors,
   // 服务
   modelManager,
   templateManager,
-  historyManager
+  historyManager,
+  // 类型
+  type OptimizationMode
 } from '@prompt-optimizer/ui'
 
 // 初始化主题
@@ -195,6 +217,14 @@ const toast = useToast()
 
 // 初始化国际化
 const { t } = useI18n()
+
+// 新增状态
+const selectedOptimizationMode = ref<OptimizationMode>('system')
+
+// 事件处理
+const handleOptimizationModeChange = (mode: OptimizationMode) => {
+  selectedOptimizationMode.value = mode
+}
 
 // 初始化服务
 const {
@@ -225,25 +255,57 @@ const {
 const {
   prompt,
   optimizedPrompt,
+  optimizedReasoning,
   isOptimizing,
   isIterating,
   selectedOptimizeTemplate,
+  selectedUserOptimizeTemplate,
   selectedIterateTemplate,
   currentVersions,
   currentVersionId,
   currentChainId,
   handleOptimizePrompt,
   handleIteratePrompt,
-  handleSwitchVersion,
-  saveTemplateSelection
+  handleSwitchVersion
 } = usePromptOptimizer(
   modelManager,
   templateManager,
   historyManager,
   promptServiceRef,
+  selectedOptimizationMode,
   selectedOptimizeModel,
   selectedTestModel
 )
+
+// 计算属性：根据优化模式选择对应的模板
+const currentSelectedTemplate = computed({
+  get() {
+    return selectedOptimizationMode.value === 'system'
+      ? selectedOptimizeTemplate.value
+      : selectedUserOptimizeTemplate.value
+  },
+  set(newValue) {
+    if (!newValue) return;
+    if (selectedOptimizationMode.value === 'system') {
+      selectedOptimizeTemplate.value = newValue
+    } else {
+      selectedUserOptimizeTemplate.value = newValue
+    }
+  }
+})
+
+// 计算属性：动态标签
+const promptInputLabel = computed(() => {
+  return selectedOptimizationMode.value === 'system'
+    ? t('promptOptimizer.systemPromptInput')
+    : t('promptOptimizer.userPromptInput')
+})
+
+const promptInputPlaceholder = computed(() => {
+  return selectedOptimizationMode.value === 'system'
+    ? t('promptOptimizer.systemPromptPlaceholder')
+    : t('promptOptimizer.userPromptPlaceholder')
+})
 
 // 初始化历史记录管理器
 const {
@@ -278,22 +340,29 @@ const {
   handleDeleteChainBase
 )
 
-// 初始化模板管理器
-const {
-  showTemplates,
-  currentType,
-  handleTemplateSelect,
-  openTemplateManager,
-  handleTemplateManagerClose
-} = useTemplateManager({
-  selectedOptimizeTemplate,
-  selectedIterateTemplate,
-  saveTemplateSelection,
-  templateManager
-})
+// Template Manager state
+const showTemplates = ref(false)
+const currentType = ref('')
+
+const openTemplateManager = (type: string) => {
+  currentType.value = type
+  showTemplates.value = true
+}
+
+// 模板选择器引用
+const templateSelectRef = ref()
+
+const handleTemplateManagerClose = () => {
+  showTemplates.value = false
+
+  // 刷新模板选择器以反映语言变更后的模板
+  // 子组件会通过 v-model 自动更新父组件的状态
+  if (templateSelectRef.value?.refresh) {
+    templateSelectRef.value.refresh()
+  }
+}
 
 // 数据管理器
-import { ref } from 'vue'
 const showDataManager = ref(false)
 
 const handleDataManagerClose = () => {
@@ -306,5 +375,10 @@ const handleDataImported = () => {
   setTimeout(() => {
     window.location.reload()
   }, 1000)
+}
+
+// GitHub 链接处理
+const openGithubRepo = () => {
+  window.open('https://github.com/linshenkx/prompt-optimizer', '_blank')
 }
 </script>
